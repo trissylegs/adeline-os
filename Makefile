@@ -14,8 +14,11 @@ all: ${src_files}
 	cargo build --target=${TARGET}
 
 entry.S:
-	echo "WOOT"
+	echo "entry.S"
+
+run-gdb:
+	qemu-system-riscv64 -machine virt -kernel target/riscv64gc-unknown-none-elf/debug/kernel -serial mon:stdio -gdb tcp::1234 -S
 
 run:
-	cargo run --target=${TARGET}
+	qemu-system-riscv64 -machine virt -kernel target/riscv64gc-unknown-none-elf/debug/kernel -serial mon:stdio
 
