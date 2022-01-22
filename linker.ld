@@ -1,0 +1,27 @@
+ENTRY(_start);
+
+/* Include entry point at start of binary */
+/* . = 0x80000000; */
+. = 0x80200000;
+SECTIONS {
+     .text : ALIGN(4K) {
+         *(.text.init);
+         *(.text);
+     }
+     .bss : ALIGN(4K) {
+         PROVIDE(bss_start = .);
+         *(.bss);
+         . += 4096;
+         PROVIDE(stack_top = .);
+         . += 4096;
+         PROVIDE(__global_pointer = .);
+         PROVIDE(bss_end = .);
+     }
+     .rodata : ALIGN(4K) {
+         *(.rodata);
+         PROVIDE(__uart_base_addr = 0x10000000);
+     }
+     .data : ALIGN(4K) {
+         *(.data);
+     }
+}
