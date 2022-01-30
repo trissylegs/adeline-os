@@ -1,224 +1,17 @@
 
+#![allow(dead_code)]
+
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, fmt::Write, sync::atomic::{AtomicBool, Ordering}};
-use fdt_rs::base::DevTree;
+mod io;
+mod pagetable;
+mod sbi;
+use sbi::*;
 
-#[repr(transparent)]
-struct ExtensionId(isize);
+use core::fmt::Write;
+use fdt_rs::{base::DevTree, prelude::{PropReader, FallibleIterator}};
 
-#[derive(Clone, Copy)]
-struct SbiRet {
-    error: SbiError,
-    value: isize,
-}
-
-impl SbiRet {
-    fn into_result(self) -> SbiResult<isize> {
-        self.into()
-    }
-}
-
-impl Into<SbiResult<isize>> for SbiRet {
-    fn into(self) -> SbiResult<isize> {
-        match self.error {
-            SbiError::SbiSuccess => Ok(self.value),
-            _ => Err(self.error)
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum SbiError {
-    SbiSuccess             ,
-    SbiErrFailed           ,
-    SbiErrNotSupported     ,
-    SbiErrInvalidParam     ,
-    SbiErrDenied           ,
-    SbiErrInvalidAddress   ,
-    SbiErrAlreadyAvailable ,
-    SbiErrAlreadyStarted   ,
-    SbiErrAlreadyStopped   ,
-    Unknown(isize),
-}
-
-impl From<isize> for SbiError {
-    fn from(i: isize) -> Self {
-        use SbiError::*;
-        match i {
-            0 => SbiSuccess,
-            -1 => SbiErrFailed,
-            -2 => SbiErrNotSupported,
-            -3 => SbiErrInvalidParam,
-            -4 => SbiErrDenied ,
-            -5 => SbiErrInvalidAddress,
-            -6 => SbiErrAlreadyAvailable,
-            -7 => SbiErrAlreadyStarted,
-            -8 => SbiErrAlreadyStopped,
-            _ => Unknown(i)
-        }
-    }
-}
-
-impl Default for SbiError {
-    fn default() -> Self {
-        Self::SbiSuccess
-    }
-}
-
-type SbiResult<T> = Result<T, SbiError>;
-
-unsafe fn sbi_call0(a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, ext: ExtensionId) -> SbiRet {
-    let mut error: isize;
-    let mut value: isize;
-
-    asm!(
-        "ecall",
-        in("a7") ext.0,
-        in("a0") a0,
-        in("a1") a1,
-        in("a2") a2,
-        in("a3") a3,
-        in("a4") a4,
-        in("a5") a5,
-        in("a6") a6,
-        
-        lateout("a0") error,
-        lateout("a1") value,
-    );
-
-    
-
-    return SbiRet { error: error.into(), value }
-}
-
-
-fn sbi_get_spec_version() -> SbiResult<isize> {
-    unsafe {
-        let result = sbi_call0(0, 0, 0, 0, 0, 0, 0, SbiBaseExtension::id());
-        result.into()        
-    }
-}
-
-fn sbi_probe_extension(extension_id: ExtensionId) -> SbiResult<isize> {
-    unsafe {
-        let result = sbi_call0(extension_id.0 as usize, 0, 0, 0, 0, 0, 0, SbiBaseExtension::id());
-        result.into()
-    }
-}
-
-trait SbiExtension {
-    fn id() -> ExtensionId;
-    unsafe fn from_probe(i: isize) -> Self;
-}
-
-struct SbiBaseExtension {
-    _n: ()
-}
-
-const BASE: SbiBaseExtension = SbiBaseExtension { _n: () };
-
-impl SbiExtension for SbiBaseExtension {
-    fn id() -> ExtensionId {
-        ExtensionId(0x10)
-    }
-    
-    /// Should only be called with value returned from `sbi_probe_extension`
-    unsafe fn from_probe(_i: isize) -> Self { SbiBaseExtension { _n: () } }
-}
-
-impl SbiBaseExtension {
-    fn get_spec_version(&self) -> SbiResult<isize> {
-        sbi_get_spec_version()
-    }
-
-    fn get_extension<E>(&self) -> SbiResult<Option<E>> where E: SbiExtension {
-        match sbi_probe_extension(E::id())? {
-            0 => Ok(None),
-            n => unsafe {
-                Ok(Some(E::from_probe(n)))
-            }
-        }
-    }
-}
-
-
-struct ConsolePutChar { _n: ()}
-
-impl SbiExtension for ConsolePutChar {
-    fn id() -> ExtensionId {
-        ExtensionId(0x01)
-    }
-
-    unsafe fn from_probe(_i: isize) -> Self {
-        Self { _n: () }
-    }
-}
-
-impl ConsolePutChar {
-    fn put_char(&self, ch: u8) {
-        unsafe {
-            sbi_call0(ch as usize, 0, 0, 0, 0, 0, 0, Self::id())
-                .into_result()
-                .expect("sbi_put_char");
-        }
-    }
-}
-
-
-struct  SystemShutdown {
-    _n: ()
-}
-
-impl SbiExtension for SystemShutdown {
-    fn id() -> ExtensionId {
-        ExtensionId(0x08)
-    }
-
-    unsafe fn from_probe(_i: isize) -> Self {
-        SystemShutdown { _n: () }
-    }
-}
-
-impl SystemShutdown {
-    fn shutdown(&self) -> Result<(), SbiError> {
-        unsafe {
-            let SbiRet { error, .. } = sbi_call0(0, 0, 0, 0, 0, 0, 0, Self::id());
-            Err(error.into())
-        }
-    }
-}
-
-struct SbiIO {
-    put_char: ConsolePutChar,
-}
-
-impl Write for SbiIO {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for b in s.bytes() {
-            self.put_char.put_char(b);
-        }
-        Ok(())
-    }
-}
-
-
-static IO_INIT: AtomicBool = AtomicBool::new(false);
-
-static mut IO: SbiIO = SbiIO {
-    put_char: ConsolePutChar { _n: () }
-};
-
-fn io() -> Option<&'static mut SbiIO> {
-    if IO_INIT.load(Ordering::SeqCst) {
-        unsafe {
-            Some(&mut IO)
-        }
-    } else {
-        None
-    }
-}
 
 #[no_mangle]
 pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8) -> ! {
@@ -228,20 +21,26 @@ pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8) -> ! {
     match version {
         Ok(_value) => {
             /*  */
-            let put_char = BASE.get_extension::<ConsolePutChar>().unwrap().unwrap();
-            IO_INIT.store(true, Ordering::SeqCst);
-
-            let mut writer = SbiIO { put_char: put_char };
-
-            writeln!(writer, "Hello, world");
-            writeln!(writer, "heart: {heart_id}");
-            writeln!(writer, "device tree: {device_tree:?}");
+            let mut writer = sbi::init_io(&BASE).unwrap();
+        
+            writeln!(writer, "Hello, world").ok();
+            writeln!(writer, "heart: {heart_id}").ok();
+            writeln!(writer, "device tree: {device_tree:?}").ok();
 
             let tree = unsafe { DevTree::from_raw_pointer(device_tree) }
                 .expect("DevTree::from_raw_pointer");
 
-            print_tree(&mut writer, &tree);
+            print_tree(&mut writer, &tree).ok();
 
+            writeln!(writer).ok();
+
+            loop {
+                let ch = writer.get_char();
+                if ch.is_none() || ch == Some(b'q') {
+                    break;
+                }                
+            }
+            
             let shutdown = BASE.get_extension::<SystemShutdown>().unwrap().unwrap();
             shutdown.shutdown().expect("shudown");
             loop {}
@@ -255,7 +54,15 @@ pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8) -> ! {
     }
 }
 
-fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) where W: Write+Sized {
+static INDENT_STR: &'static str = "                                ";
+
+fn indent(n: usize) -> &'static str {
+    INDENT_STR.split_at(n).0
+}
+
+fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) -> core::fmt::Result
+    where W: Write+Sized 
+{
     let magic = tree.magic();
     let version = tree.version();
     let totalsize = tree.totalsize();
@@ -269,31 +76,102 @@ fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) where W: Write+Sized {
     let size_dt_strings = tree.off_dt_strings();
 
 
-    writeln!(w, "DevTree:");
+    writeln!(w, "DevTree:")?;
 
     let mut ind = indenter::indented(w);
-    ind = ind.ind(4);
-    writeln!(ind, "magic: {magic}");
-    writeln!(ind, "version: {version}");
-    writeln!(ind, "totalsize: {totalsize}");
-    writeln!(ind, "boot_cpuid_phys: {boot_cpuid_phys}");
-    writeln!(ind, "last_comp_version: {last_comp_version}");
-    writeln!(ind, "off_mem_rsvmap: {off_mem_rsvmap}");
-    writeln!(ind, "off_dt_struct: {off_dt_struct}");
-    writeln!(ind, "size_dt_struct: {size_dt_struct}");
-    writeln!(ind, "off_dt_strings: {off_dt_strings}");
-    writeln!(ind, "size_dt_strings: {size_dt_strings}");
+    ind = ind.with_str(indent(4));
+    writeln!(ind, "magic: {magic}")?;
+    writeln!(ind, "version: {version}")?;
+    writeln!(ind, "totalsize: {totalsize}")?;
+    writeln!(ind, "boot_cpuid_phys: {boot_cpuid_phys}")?;
+    writeln!(ind, "last_comp_version: {last_comp_version}")?;
+    writeln!(ind, "off_mem_rsvmap: {off_mem_rsvmap}")?;
+    writeln!(ind, "off_dt_struct: {off_dt_struct}")?;
+    writeln!(ind, "size_dt_struct: {size_dt_struct}")?;
+    writeln!(ind, "off_dt_strings: {off_dt_strings}")?;
+    writeln!(ind, "size_dt_strings: {size_dt_strings}")?;
 
-    writeln!(ind, "reserved_entries:");
-    ind = ind.ind(8);
+    writeln!(ind, "reserved_entries:")?;
+    ind = ind.with_str(indent(8));
     for re in tree.reserved_entries() {
         
         let address: u64 = re.address.into();
         let size: u64 = re.size.into();
-        writeln!(ind, "fdt_reserve_entry: ");
-        writeln!(ind, "    address: {address:x}");
-        writeln!(ind, "    size: {size:x}");        
+        writeln!(ind, "fdt_reserve_entry: ")?;
+        writeln!(ind, "    address: {address:x}")?;
+        writeln!(ind, "    size: {size:x}")?;   
     }
+    ind = ind.with_str(indent(4));
+
+    writeln!(ind, "nodes:")?;
+    ind = ind.with_str(indent(8));
+
+    let mut address_cells = 0;
+    let mut size_cells = 0;
+
+    for node in tree.nodes().iterator() {
+        if let Ok(node) = node {
+            writeln!(ind, "node:")?;
+            ind = ind.with_str(indent(12));
+            let name = node.name();
+            writeln!(ind, "name: {name:?}")?;
+            writeln!(ind, "props:")?;
+            ind = ind.with_str(indent(16));
+            for prop in node.props().iterator() {
+                if let Ok(prop) = prop {
+                    if let Ok(prop_name) = prop.name() {
+                        match prop_name {
+                            "reg" if address_cells == 2 && size_cells == 2 => {
+                                let address = prop.u64(0).unwrap();
+                                let size = prop.u64(1).unwrap();
+                                writeln!(ind, "{}: <0x{:x} 0x{:x}>", prop_name, address, size)?;
+                            }
+                            "reg" if address_cells == 1 && size_cells == 1 => {
+                                let address = prop.u32(0).unwrap();
+                                let size = prop.u32(1).unwrap();
+                                writeln!(ind, "{}: <0x{:x} 0x{:x}>", prop_name, address, size)?;
+                            }
+                            "reg" if address_cells == 2 || size_cells == 2 => {
+                                let value = prop.u64(0).unwrap();
+                                writeln!(ind, "{}: <0x{:x}>", prop_name, value)?;
+                            }
+                            "reg" if address_cells == 1 || size_cells == 1 => {
+                                let value = prop.u32(0).unwrap();
+                                writeln!(ind, "{}: <0x{:x}>", prop_name, value)?;
+                            }
+                            "phandle" => {
+                                let phandle = prop.phandle(0).unwrap();
+                                writeln!(ind, "{prop_name}: <0x{phandle:x}>")?;
+                            }
+                            "#address-cells" => {
+                                let prop_u32 = prop.u32(0).unwrap();
+                                address_cells = prop_u32;
+                                writeln!(ind, "{prop_name}: <{prop_u32}>")?;
+                            }
+                            "#size-cells" => {
+                                let prop_u32 = prop.u32(0).unwrap();
+                                size_cells = prop_u32;
+                                writeln!(ind, "{prop_name}: <{prop_u32}>")?;
+                            }
+
+                            _ => {
+                                if let Ok(prop_str) = prop.str() {
+                                    writeln!(ind, "{}: {:?} ({})", prop_name, prop_str, prop_str.len())?; 
+                                } else {
+                                    writeln!(ind, "{}", prop_name)?;
+                                }
+                            }
+                            
+                        }
+                    }
+                }
+            }
+        }
+
+        ind = ind.with_str(indent(8));
+    }
+
+    Ok(())
 }
 
 mod panic {
@@ -306,7 +184,7 @@ mod panic {
     #[no_mangle]
     pub fn panic(info: &PanicInfo) -> ! {
         if let Some(io) = io() {
-            writeln!(io, "{info}");
+            writeln!(io, "{info}").ok();
         }
         abort();
     }
