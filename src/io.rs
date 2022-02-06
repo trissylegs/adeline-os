@@ -37,7 +37,7 @@ pub trait Read {
     where
         Self: Sized
     {
-        Take { inner: self, limit }
+        Take { inner: self, limit, amount: 0 }
     }
 }
 
@@ -261,13 +261,76 @@ pub struct Bytes<R: Read+Sized> {
     inner: R,
 }
 
+impl<R: Read+Sized> Iterator for Bytes<R> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut buf = [0; 1];
+        match self.inner.read(&mut buf[..]) {
+            Ok(1) => Some(buf[0]),
+            _ => None,
+        }
+    }
+}
+
 pub struct Chain<A: Read+Sized, B: Read+Sized> {
     first: A,
     second: B,
     done_first: bool,
 }
 
+impl<A,B> Read for Chain<A, B> 
+    where A: Read+Sized, B: Read+Sized
+{
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if !self.done_first {
+            match self.first.read(buf) {
+                Ok(0) => { self.done_first = true; }
+                Ok(n) => { return Ok(n); }
+                Err(err) => { return Err(err); }
+            }
+        }
+        match self.second.read(buf) {
+            Ok(n) => Ok(n),
+            Err(err) => Err(err),
+        }
+    }
+}
+
 pub struct Take<R: Read+Sized> { 
     inner: R,
-    limit: u64 
+    limit: u64,
+    amount: u64,
+}
+
+impl<R: Read+Sized> Take<R> {
+    pub fn amount_remaining(&self) -> u64 {
+        self.limit - self.amount
+    }
+}
+
+
+impl<R: Read+Sized> Read for Take<R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let remaing: usize = match self.amount_remaining().try_into() {
+            Ok(n) => n,
+            _ => usize::MAX
+        };
+        
+        
+        let buf_len = buf.len();
+        let b = if remaing > buf.len() {
+            buf
+        } else {
+            &mut buf[..buf_len]
+        };
+
+        match self.inner.read(b) {
+            Ok(n) => {
+                self.amount += n as u64;
+                Ok(n)
+            },
+            Err(err) => Err(err)
+        }
+    }
 }

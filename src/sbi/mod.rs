@@ -2,8 +2,8 @@
 #[allow(dead_code)]
 mod call;
 use call::*;
-
-use core::sync::atomic::{Ordering, AtomicBool};
+use conquer_once::spin::OnceCell;
+use spin::Mutex;
 
 #[repr(transparent)]
 pub struct ExtensionId(isize);
@@ -200,6 +200,12 @@ pub struct SbiIO {
     get_char: ConsoleGetChar,
 }
 
+impl SbiIO {
+    pub fn put_char(&mut self, ch: u8) {
+        self.put_char.put_char(ch)
+    }
+}
+
 impl core::fmt::Write for SbiIO {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for b in s.bytes() {
@@ -209,40 +215,45 @@ impl core::fmt::Write for SbiIO {
     }
 }
 
-pub static IO_INIT: AtomicBool = AtomicBool::new(false);
-pub static mut IO: SbiIO = SbiIO {
-    put_char: ConsolePutChar { _n: () },
-    get_char: ConsoleGetChar { _n: () },
-};
+pub static _IO: OnceCell<Mutex<SbiIO>> = OnceCell::uninit();
 
 impl SbiIO {
     pub fn get_char(&self) -> Option<u8> {
-        / / /
-        TODO: Debug why get_char fails.
-        self.get_char.get_char().unwrap()
+        self.get_char.get_char().ok().flatten()
     }
 }
 
-pub fn io() -> Option<&'static mut SbiIO> {
-    if IO_INIT.load(Ordering::SeqCst) {
-        unsafe {
-            Some(&mut IO)
-        }
-    } else {
-        None
-    }
+pub fn stdio() -> &'static Mutex<SbiIO> {
+    _IO.get().unwrap()
 }
 
-pub fn init_io(base: &SbiBaseExtension) -> SbiResult<SbiIO> {
-    let put_char = base.get_extension::<ConsolePutChar>()
-        .unwrap()
+pub fn init_io(base: &SbiBaseExtension) -> SbiResult<()> {
+    let put_char = base.get_extension::<ConsolePutChar>()?        
         .unwrap();
-    let get_char = base.get_extension::<ConsoleGetChar>()
-        .unwrap()
+    let get_char = base.get_extension::<ConsoleGetChar>()?
         .unwrap();
-    IO_INIT.store(true, Ordering::SeqCst);
-    Ok(SbiIO {
-        put_char,
-        get_char,
-    })
+    _IO.init_once(|| {        
+        Mutex::new(SbiIO { put_char, get_char })
+    });
+    Ok(())
+}
+
+#[doc(hidden)]
+pub fn _print(args: core::fmt::Arguments) {
+    let mut lock = stdio().lock();
+    core::fmt::Write::write_fmt(&mut *lock, args).ok();
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::sbi::_print(format_args!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! println {
+    () => { $crate::sbi::_print(format_args!("\n")) };
+    ($fmt:expr) => ($crate::print!(concat!($fmt, "\n")));
+    ($fmt:expr, $($arg:tt)*) => ($crate::print!(concat!($fmt, "\n"), $($arg)*));
 }
