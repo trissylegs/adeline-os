@@ -1,42 +1,53 @@
-
 #![feature(naked_functions)]
 #![feature(default_alloc_error_handler)]
 #![feature(custom_test_frameworks)]
+#![feature(never_type)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-
 #![allow(dead_code)]
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+mod basic_allocator;
+mod dev_tree;
 mod io;
 mod pagetable;
 mod sbi;
-mod uart;
 mod traits;
-mod basic_allocator;
-// mod dev_tree;
+mod uart;
 
-use riscv::register::scause::Trap;
-use sbi::*;
+use core::{
+    arch::asm,
+    fmt::{Debug, Write},
+};
+use fdt_rs::{
+    base::DevTree,
+    prelude::{FallibleIterator, PropReader},
+};
+use riscv::register::{
+    mtvec,
+    scause::{self, Trap},
+    sepc, sie, sip, sstatus, stvec,
+};
 
-use core::{fmt::{Write, Debug}, arch::asm};
-use fdt_rs::{base::DevTree, prelude::{PropReader, FallibleIterator}};
+use crate::sbi::SystemShutdown;
 
 #[no_mangle]
 pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8) -> ! {
+    let stvec = trap_entry as *const u8;
+    unsafe {
+        stvec::write(stvec as usize, mtvec::TrapMode::Direct);
+    }
+    sbi::init_io(&sbi::BASE_EXTENSION).unwrap();
     basic_allocator::init();
-
-    sbi::init_io(&BASE).unwrap();    
-
+    
     println!("Hello, world");
     println!("heart: {}", heart_id);
     println!("device tree: {:?}", device_tree);
 
-
-    let sstatus = riscv::register::sstatus::read();
+    let sstatus = sstatus::read();
     println!("Sstatus {{");
     println!("  uie: {}", sstatus.uie());
     println!("  sie: {}", sstatus.sie());
@@ -49,8 +60,8 @@ pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8) -> ! {
     println!("  mxr: {}", sstatus.mxr());
     println!("  sd: {}", sstatus.sd());
     println!("}}");
-   
-    let sstatus = riscv::register::sie::read();
+
+    let sstatus = sie::read();
     println!("Sstatus {{");
     println!("  usoft: {}", sstatus.usoft());
     println!("  ssoft: {}", sstatus.ssoft());
@@ -58,36 +69,46 @@ pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8) -> ! {
     println!("  utimer: {}", sstatus.utimer());
     println!("  stimer: {}", sstatus.stimer());
     println!("  uext: {}", sstatus.uext());
-    println!("  sext: {}", sstatus.sext()); 
+    println!("  sext: {}", sstatus.sext());
     println!("}}");
 
-    let stvec = riscv::register::stvec::read();
+    let stvec = stvec::read();
     println!("Stvec {{");
     println!("  address: {:x}", stvec.address());
     println!("  mode: {:?}", stvec.trap_mode());
     println!("}}");
-   
-    let stvec = trap_entry as *const u8;
-    unsafe {
-        riscv::register::stvec::write(stvec as usize, riscv::register::mtvec::TrapMode::Direct);
-    }
 
-    // let tree = unsafe { DevTree::from_raw_pointer(device_tree) }.expect("DevTree::from_raw_pointer");
-    // print_tree(&mut *stdio().lock(), &tree).ok();
-    println!();
+    println!();    
 
-    let b = unsafe {
-        *(0x100 as *const u64)
-    };
-    
-    println!("b = {:x}", b);
+    pagetable::print_current_page_table();
 
     #[cfg(test)]
     test_main();
 
-    let shutdown = BASE.get_extension::<SystemShutdown>().unwrap().unwrap();
-    shutdown.shutdown().expect("shudown");
+    if let Ok(Some(shutdown)) = sbi::BASE_EXTENSION.get_extension::<SystemShutdown>() {
+        if let Err(err) = shutdown.shutdown() {
+            println!("Shutdown command failed: {:?}", err)
+        }
+    }
+    println!("Shutdown not avalible");
+
     loop {}
+}
+
+pub struct Plic {
+    phandle: u32,
+    riscv_ndev: u32,
+    reg: MemoryRange,
+    interrupts_extended: [u8; 4],
+    compatible: alloc::vec::Vec<alloc::string::String>,
+    interrupt_cells: u32,
+    address_cells: u32,
+}
+
+#[derive(Debug)]
+pub struct MemoryRange {
+    base: usize,
+    size: usize,
 }
 
 #[repr(C)]
@@ -163,14 +184,14 @@ impl Debug for TrapRegisters {
     }
 }
 
-
+#[allow(unsupported_naked_functions)]
 #[naked]
 #[no_mangle]
 pub unsafe extern "C" fn trap_entry() {
     asm!(
         "addi  sp, sp, -31 * 8", /* Allocate stack space */
         "sd    x1,  0 * 8(sp)",  /* Push registers */
-        "sd    x2,  1 * 8(sp)",
+        "sd    sp,  1 * 8(sp)", /* fixme: this is saving the updated value of sp. Not it's value *before* the trap was called. */
         "sd    x3,  2 * 8(sp)",
         "sd    x4,  3 * 8(sp)",
         "sd    x5,  4 * 8(sp)",
@@ -200,7 +221,7 @@ pub unsafe extern "C" fn trap_entry() {
         "sd   x29, 28 * 8(sp)",
         "sd   x30, 29 * 8(sp)",
         "sd   x31, 30 * 8(sp)",
-        "mv a0, sp",
+        "mv   a0,  sp",
         "call trap",
         /* Pop registers */
         "ld    x1,  0 * 8(sp)",
@@ -234,38 +255,36 @@ pub unsafe extern "C" fn trap_entry() {
         "ld   x29, 28 * 8(sp)",
         "ld   x30, 29 * 8(sp)",
         "ld   x31, 30 * 8(sp)",
-
         "addi  sp, sp, 31 * 8", /* Deallocate stack space */
-
         "sret",
     );
-    unreachable!()
 }
 
 #[no_mangle]
 extern "C" fn trap(regs: &mut TrapRegisters) {
-    let sepc = riscv::register::sepc::read();
-    let sstatus = riscv::register::sstatus::read();
-    let sip = riscv::register::sip::read();
-    let sie = riscv::register::sie::read();
-    let scause = riscv::register::scause::read();
-    
+    let sepc = sepc::read();
+    let sstatus = sstatus::read();
+    let sip = sip::read();
+    let sie = sie::read();
+    let scause = scause::read();
+
     println!("In function trap");
     println!("sepc = {:}", sepc);
+    println!("sstatus = {:?}", sstatus);
+    println!("sip = {:?}", sip);
+    println!("sie = {:?}", sie);
     println!("scause = 0x{:x}", scause.bits());
     println!("scause.code = {:?}", scause.code());
     println!("scause.cause = {:?}", scause.cause());
     println!("regs = {:#?}", regs);
-    let instruction = unsafe {
-        *(sepc as *const u32)
-    };
+    let instruction = unsafe { *(sepc as *const u32) };
     println!("pc = {:x}", sepc);
     println!("ins = {:x}", instruction);
 
     match scause.cause() {
         Trap::Interrupt(int) => println!("Interrupt: {:?}", int),
         Trap::Exception(ex) => panic!("Supervisor exception {:?}", ex),
-    }    
+    }
 }
 
 static INDENT_STR: &'static str = "                                                                                                                                ";
@@ -275,7 +294,8 @@ fn indent(n: usize) -> &'static str {
 }
 
 fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) -> core::fmt::Result
-    where W: Write+Sized 
+where
+    W: Write + Sized,
 {
     let magic = tree.magic();
     let version = tree.version();
@@ -288,7 +308,6 @@ fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) -> core::fmt::Result
     let size_dt_struct = tree.size_dt_struct();
     let off_dt_strings = tree.off_dt_strings();
     let size_dt_strings = tree.off_dt_strings();
-
 
     writeln!(w, "DevTree:")?;
 
@@ -308,12 +327,11 @@ fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) -> core::fmt::Result
     writeln!(ind, "reserved_entries:")?;
     ind = ind.with_str(indent(8));
     for re in tree.reserved_entries() {
-        
         let address: u64 = re.address.into();
         let size: u64 = re.size.into();
         writeln!(ind, "fdt_reserve_entry: ")?;
         writeln!(ind, "    address: {address:x}")?;
-        writeln!(ind, "    size: {size:x}")?;   
+        writeln!(ind, "    size: {size:x}")?;
     }
     ind = ind.with_str(indent(4));
 
@@ -370,12 +388,17 @@ fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) -> core::fmt::Result
 
                             _ => {
                                 if let Ok(prop_str) = prop.str() {
-                                    writeln!(ind, "{}: {:?} ({})", prop_name, prop_str, prop_str.len())?; 
+                                    writeln!(
+                                        ind,
+                                        "{}: {:?} ({})",
+                                        prop_name,
+                                        prop_str,
+                                        prop_str.len()
+                                    )?;
                                 } else {
                                     writeln!(ind, "{}", prop_name)?;
                                 }
                             }
-                            
                         }
                     }
                 }
@@ -388,14 +411,11 @@ fn print_tree<W>(w: &mut W, tree: &DevTree<'_>) -> core::fmt::Result
     Ok(())
 }
 
-
 mod panic {
-    use core::panic::PanicInfo;
+    use crate::sbi::{self, stdio, SystemShutdown};
     use core::fmt::Write;
+    use core::panic::PanicInfo;
 
-    use crate::io;
-    use crate::sbi::stdio;
-        
     #[panic_handler]
     #[no_mangle]
     pub fn panic(info: &PanicInfo) -> ! {
@@ -403,15 +423,18 @@ mod panic {
         unsafe {
             io.force_unlock();
         }
-        
-        writeln!(&mut *io.lock() , "{info}");        
+
+        writeln!(&mut *io.lock(), "{info}").ok();
         abort();
     }
 
     #[no_mangle]
     pub extern "C" fn abort() -> ! {
-        loop {
+        if let Ok(Some(shutdown)) = sbi::BASE_EXTENSION.get_extension::<SystemShutdown>() {
+            shutdown.shutdown().ok();
         }
+
+        loop {}
     }
 }
 
@@ -430,7 +453,6 @@ where
     }
 }
 
-
 pub fn test_runner(tests: &[&dyn Testable]) {
     println!("Running {} tests", tests.len());
     for test in tests {
@@ -442,4 +464,20 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 #[test_case]
 fn hello_world() {
     println!("Hello world!");
+}
+
+fn _uart_init() {
+    unsafe {
+        uart::UartDriver::init(uart::Config {
+            name: "uart@10000000",
+            interrupts: 0x0a,
+            interrupt_parent: 0x03,
+            clock_frequency: 0x00384000,
+            reg: MemoryRange {
+                base: 0x10000000,
+                size: 0x100,
+            },
+            compatible: "ns16550a",
+        })
+    };
 }

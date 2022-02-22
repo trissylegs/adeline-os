@@ -95,7 +95,7 @@ pub struct SbiBaseExtension {
     _n: (),
 }
 
-pub const BASE: SbiBaseExtension = SbiBaseExtension { _n: () };
+pub const BASE_EXTENSION: SbiBaseExtension = SbiBaseExtension { _n: () };
 
 impl SbiExtension for SbiBaseExtension {
     fn id() -> ExtensionId {
@@ -187,7 +187,7 @@ impl SbiExtension for SystemShutdown {
 }
 
 impl SystemShutdown {
-    pub fn shutdown(&self) -> Result<(), SbiError> {
+    pub fn shutdown(&self) -> Result<!, SbiError> {
         unsafe {
             let SbiRet { error, .. } = sbi_call0(Self::id());
             Err(error.into())

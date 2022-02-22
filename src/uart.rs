@@ -1,5 +1,6 @@
-use core::fmt::Debug;
-use crate::traits::{Console, Driver};
+use core::{fmt::{Debug, Write}, mem::size_of};
+
+use crate::{traits::{Console, Driver}, MemoryRange};
 
 const UART_RBR_OFFSET: u32 = 0;	/* In:  Recieve Buffer Register */
 const UART_THR_OFFSET: u32 = 0;	/* Out: Transmitter Holding Register */
@@ -25,31 +26,44 @@ const UART_LSR_OE: u32             = 0x02; /* Overrun error indicator */
 const UART_LSR_DR: u32             = 0x01; /* Receiver data ready */
 const UART_LSR_BRK_ERROR_BITS: u32 = 0x1E; /* BI, FE, PE, OE bits */
 
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum RegisterSize {
-    Byte   = 1,
-    Word   = 2,
-    DWord  = 4,
+#[derive(Debug)]
+pub struct UartDriver {
+    config: Config,
+    base: &'static mut [u64],
+    in_freq: u32,
+    baudrate: u32,
 }
 
 #[derive(Debug)]
-pub struct UartDriver {
-    name: &'static str, 
-    base: *mut u8,
-    in_freq: u32,
-    baudrate: u32,
-    reg_shift: u32,
-    reg_width: RegisterSize,
+pub struct Config {
+    pub name: &'static str,
+    pub interrupts: u32,
+    pub interrupt_parent: u32,
+    pub clock_frequency: u32,
+    pub reg: MemoryRange,
+    pub compatible: &'static str,
 }
 
 impl UartDriver {
-    pub unsafe fn init(base: *mut u8, in_freq: u32, baudrate: u32, reg_shift: u32, reg_width: RegisterSize)
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub unsafe fn init(config: Config)
         -> UartDriver
     {
+        let base = core::slice::from_raw_parts_mut(
+            config.reg.base as *mut u64, 
+            config.reg.size / (size_of::<u64>()) );
+
+        let in_freq = config.clock_frequency;
+        let baudrate = 115200;
+
         let mut driver = UartDriver {
-            name: "uart8250",
-            base, in_freq, baudrate, reg_shift, reg_width,
+            config,
+            base,
+            in_freq,
+            baudrate,
         };
 
         let bdiv = in_freq / (16 * baudrate);
@@ -63,7 +77,7 @@ impl UartDriver {
             // Divisor low
             driver.set_reg(UART_DLL_OFFSET, bdiv & 0xff);
             // Divisor high
-            driver.set_reg(UART_DLM_OFFSET, (bdiv >> 8) & 0xff);            
+            driver.set_reg(UART_DLM_OFFSET, (bdiv >> 8) & 0xff);
         }
 
         // 8 bits, no parity, one stop bit
@@ -83,34 +97,35 @@ impl UartDriver {
     }
     
     unsafe fn set_reg(&mut self, register_num: u32, value: u32) {
-        let offset = register_num << self.reg_shift;
-
-        let addr = self.base.offset(offset as isize);
-        write_at(addr, self.reg_width, value);
+        let addr = &mut self.base[register_num as usize];
+        *addr = value as u64;
     }
 
     unsafe fn get_reg(&mut self, register_num: u32) -> u32 {
-        let offset = register_num << self.reg_shift;
-        let addr = self.base.offset(offset as isize);
-        read_at(addr, self.reg_width)
+        let addr = &mut self.base[register_num as usize];
+        *addr as u32        
     }
-}
 
-impl Driver for UartDriver {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-}
-
-impl Console for UartDriver {
-    fn put_char(&mut self, value: u8) {
+    fn wait(&mut self) {
         loop {
             let lsr = unsafe { self.get_reg(UART_LSR_OFFSET) };
             if (lsr & UART_LSR_THRE) != 0 {
                 break;
             }
         }
+    }
+}
 
+impl Driver for UartDriver {
+    fn name(&self) -> &'static str {
+        "uart"
+    }
+}
+
+impl Console for UartDriver {
+
+    fn put_char(&mut self, value: u8) {
+        self.wait();
         unsafe {
             self.set_reg(UART_THR_OFFSET, value as u32);
         }
@@ -127,19 +142,11 @@ impl Console for UartDriver {
 
 }
 
-
-unsafe fn write_at(ptr: *mut u8, size: RegisterSize, value: u32) {
-    match size {
-        RegisterSize::Byte => ptr.write_volatile(value as u8),
-        RegisterSize::Word => (ptr as *mut u16).write_volatile(value as u16),
-        RegisterSize::DWord => (ptr as *mut u32).write_volatile(value),
-    }
-}
-
-unsafe fn read_at(ptr: *mut u8, size: RegisterSize) -> u32 {
-    match size {
-        RegisterSize::Byte => ptr.read_volatile() as u32,
-        RegisterSize::Word => (ptr as *mut u16).read_volatile() as u32,
-        RegisterSize::DWord => (ptr as *mut u32).read_volatile(),
+impl Write for UartDriver {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for b in s.bytes() {
+            self.put_char(b);
+        }
+        Ok(())
     }
 }
