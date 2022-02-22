@@ -1,5 +1,5 @@
 [target.riscv64gc-unknown-none-elf]
-runner = "qemu-system-riscv64 -machine virt -bios ../opensbi/build/platform/generic/firmware/fw_dynamic.elf -serial mon:stdio -kernel"
+runner = "qemu-system-riscv64 -nographic -machine virt -bios ../opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel"
 rustflags = [
   "-C", "link-arg=-Tlinker.ld",
 ]

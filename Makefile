@@ -17,8 +17,7 @@ entry.S:
 	echo "entry.S"
 
 run-gdb:
-	qemu-system-riscv64 -machine virt -kernel target/riscv64gc-unknown-none-elf/debug/kernel -serial mon:stdio -gdb tcp::1234 -S
+	qemu-system-riscv64 -machine virt -serial mon:stdio -gdb tcp::1234 -S -bios ../opensbi/build/platform/generic/firmware/fw_dynamic.elf -kernel target/riscv64gc-unknown-none-elf/debug/kernel
 
 run:
-	qemu-system-riscv64 -machine virt -kernel target/riscv64gc-unknown-none-elf/debug/kernel -serial mon:stdio
-
+	cargo run
