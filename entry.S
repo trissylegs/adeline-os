@@ -29,9 +29,10 @@ _start:
         
         call    memset
 
-        mv      a0,s0
-        mv      a1,s1
-        
+        mv      a0,s0                  // HeartID: i32
+        mv      a1,s1                  // devtree address: *const u8
+        la      a2,_start_of_data      // start_of_data: *const ()
+        la      a3,_end_of_data        // end_of_data: *const ()
         /* Jump to kernel! */
         tail    kmain
 

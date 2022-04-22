@@ -35,47 +35,50 @@ use riscv::register::{
 use crate::sbi::SystemShutdown;
 
 #[no_mangle]
-pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8) -> ! {
+pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8, start_of_memory: *const(), end_of_memory: *const ()) -> ! {
     let stvec = trap_entry as *const u8;
     unsafe {
         stvec::write(stvec as usize, mtvec::TrapMode::Direct);
     }
     sbi::init_io(&sbi::BASE_EXTENSION).unwrap();
     basic_allocator::init();
-    
+    let device_tree = unsafe { dev_tree::get_range(device_tree) };    
+
     println!("Hello, world");
     println!("heart: {}", heart_id);
-    println!("device tree: {:?}", device_tree);
+    println!("device tree: {:?}, 0x{:x} bytes", device_tree.as_ptr(), device_tree.len());
+    println!("start_of_memory: {:?}", start_of_memory);
+    println!("End of memory: {:?}", end_of_memory);
 
     let sstatus = sstatus::read();
     println!("Sstatus {{");
-    println!("  uie: {}", sstatus.uie());
-    println!("  sie: {}", sstatus.sie());
-    println!("  upie: {}", sstatus.upie());
-    println!("  spie: {}", sstatus.spie());
-    println!("  spp: {:?}", sstatus.spp());
-    println!("  fs: {:?}", sstatus.fs());
-    println!("  xs: {:?}", sstatus.xs());
-    println!("  sum: {}", sstatus.sum());
-    println!("  mxr: {}", sstatus.mxr());
-    println!("  sd: {}", sstatus.sd());
+    println!("  uie: {},", sstatus.uie());
+    println!("  sie: {},", sstatus.sie());
+    println!("  upie: {},", sstatus.upie());
+    println!("  spie: {},", sstatus.spie());
+    println!("  spp: {:?},", sstatus.spp());
+    println!("  fs: {:?},", sstatus.fs());
+    println!("  xs: {:?},", sstatus.xs());
+    println!("  sum: {},", sstatus.sum());
+    println!("  mxr: {},", sstatus.mxr());
+    println!("  sd: {},", sstatus.sd());
     println!("}}");
 
     let sstatus = sie::read();
     println!("Sstatus {{");
-    println!("  usoft: {}", sstatus.usoft());
-    println!("  ssoft: {}", sstatus.ssoft());
-    println!("  utimer: {}", sstatus.utimer());
-    println!("  utimer: {}", sstatus.utimer());
-    println!("  stimer: {}", sstatus.stimer());
-    println!("  uext: {}", sstatus.uext());
-    println!("  sext: {}", sstatus.sext());
+    println!("  usoft: {},", sstatus.usoft());
+    println!("  ssoft: {},", sstatus.ssoft());
+    println!("  utimer: {},", sstatus.utimer());
+    println!("  utimer: {},", sstatus.utimer());
+    println!("  stimer: {},", sstatus.stimer());
+    println!("  uext: {},", sstatus.uext());
+    println!("  sext: {},", sstatus.sext());
     println!("}}");
 
     let stvec = stvec::read();
     println!("Stvec {{");
-    println!("  address: {:x}", stvec.address());
-    println!("  mode: {:?}", stvec.trap_mode());
+    println!("  address: {:x},", stvec.address());
+    println!("  mode: {:?},", stvec.trap_mode());
     println!("}}");
 
     println!();    

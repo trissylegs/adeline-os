@@ -1,4 +1,11 @@
 use core::fmt;
+use fdt_rs::{self, base::DevTree};
+
+pub unsafe fn get_range(start: *const u8) -> &'static [u8] {
+    let tree = DevTree::from_raw_pointer(start).expect("No tree");
+    let len = tree.totalsize();
+    core::slice::from_raw_parts(start,len)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Phandle(u32);
