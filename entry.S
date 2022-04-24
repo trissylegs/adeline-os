@@ -40,5 +40,19 @@ _start:
         ebreak
         .cfi_endproc
 
-        .end
 
+
+        .global _constants
+_constants:
+        // Easy to find in objdump
+        .quad 0x3333333333333333
+        .quad _start_of_data
+        .quad _end_of_data
+        .quad bss_start
+        .quad bss_end
+        .quad stack_limit
+        .quad stack_top
+        .quad __global_pointer
+        .quad __uart_base_addr
+        
+        .end

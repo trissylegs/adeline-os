@@ -41,10 +41,11 @@ pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8, start_of_memory: 
         stvec::write(stvec as usize, mtvec::TrapMode::Direct);
     }
     sbi::init_io(&sbi::BASE_EXTENSION).unwrap();
+    println!("Hello, world");
     basic_allocator::init();
     let device_tree = unsafe { dev_tree::get_range(device_tree) };    
 
-    println!("Hello, world");
+
     println!("heart: {}", heart_id);
     println!("device tree: {:?}, 0x{:x} bytes", device_tree.as_ptr(), device_tree.len());
     println!("start_of_memory: {:?}", start_of_memory);
@@ -187,7 +188,7 @@ impl Debug for TrapRegisters {
     }
 }
 
-#[allow(unsupported_naked_functions)]
+// #[allow(unsupported_naked_functions)]
 #[naked]
 #[no_mangle]
 pub unsafe extern "C" fn trap_entry() {
@@ -260,6 +261,7 @@ pub unsafe extern "C" fn trap_entry() {
         "ld   x31, 30 * 8(sp)",
         "addi  sp, sp, 31 * 8", /* Deallocate stack space */
         "sret",
+        options(noreturn)
     );
 }
 
