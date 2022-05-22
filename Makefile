@@ -1,17 +1,18 @@
 
 export TARGET=riscv64gc-unknown-none-elf
-export CROSS_COMPILE=riscv64-elf-
+export CROSS_COMPILE=riscv64-unknown-elf-
 
 PLATFORM=generic
-export CC=clang-mp-13
-export AR=riscv64-elf-ar
-export LD=riscv64-elf-ld
-export OBJCOPY=riscv64-elf-13
+
+export CC=$(CROSS_COMPILE)gcc
+export AR=$(CROSS_COMPILE)ar
+export LD=$(CROSS_COMPILE)ld
+export OBJCOPY=$(CROSS_COMPILE)13
 
 FW_JUMP=y
 FW_JUMP_ADDR=0x80200000
 
-MAKE_OPENSBI=$(MAKE) PLATFORM=$(PLATFORM) CC=$(CC) AR=$(AR) LD=$(LD) OBJCOPY=$(OBJCOPY) FW_JUMP=y FW_JUMP_ADDR=$(FW_JUMP_ADDR)
+MAKE_OPENSBI=$(MAKE) PLATFORM=$(PLATFORM) CROSS_COMPILE=$(CROSS_COMPILE)
 
 QEMU_MACHINE=virt
 QEMU_MEMORY=128M
