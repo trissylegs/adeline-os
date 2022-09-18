@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug QEMU remote",
+            "type": "gdb",
+            "request": "attach",
+            "remote": true,
+            "target": ":1234",            
+            "executable": "target/riscv64gc-unknown-none-elf/debug/kernel",
+            "gdbpath": "/opt/riscv/bin/riscv64-unknown-elf-gdb",
+            "debugger_args": [                
+		        "-ex", "add-symbol-file ../opensbi/build/platform/generic/firmware/fw_jump.elf",
+            ],            
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText"            
+        }
+    ]
+}

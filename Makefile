@@ -46,9 +46,9 @@ dump-dtb:
 
 attach-gdb:
 	riscv64-elf-gdb \
-	        -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' \
+		-ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' \
 		-ex 'add-symbol-file ../opensbi/build/platform/generic/firmware/fw_jump.elf' \
-	        -ex 'target remote localhost:1234'
+		-ex 'target remote localhost:1234'
 	killall qemu-system-riscv64
 run:
 	cargo run
