@@ -27,27 +27,85 @@ use fdt_rs::{
     prelude::{FallibleIterator, PropReader},
 };
 use riscv::register::{
+    mstatus::set_spie,
     mtvec,
     scause::{self, Trap},
-    sepc, sie, sip, sstatus, stvec,
+    sepc, sie, sip, sstatus, stval, stvec,
 };
 
-use crate::sbi::SystemShutdown;
+use crate::sbi::{
+    reset::{ResetType, SystemResetExtension},
+    timer::Timer,
+    SystemShutdown, BASE_EXTENSION,
+};
+
+extern "C" {
+    pub static _start_of_data: usize;
+    pub static _end_of_data: usize;
+    pub static bss_start: usize;
+    pub static bss_end: usize;
+    pub static stack_limit: usize;
+    pub static stack_top: usize;
+    pub static __global_pointer: usize;
+    pub static __uart_base_addr: usize;
+}
 
 #[no_mangle]
-pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8, start_of_memory: *const(), end_of_memory: *const ()) -> ! {
-    let stvec = trap_entry as *const u8;
-    unsafe {
-        stvec::write(stvec as usize, mtvec::TrapMode::Direct);
-    }
+pub extern "C" fn kmain(
+    heart_id: u32,
+    device_tree: *const u8,
+    start_of_memory: *const (),
+    end_of_memory: *const (),
+) -> ! {
     sbi::init_io(&sbi::BASE_EXTENSION).unwrap();
     println!("Hello, world");
-    basic_allocator::init();
-    let device_tree = unsafe { dev_tree::get_range(device_tree) };    
 
+    let stvec_addr = trap_entry as *const u8;
+    assert_eq!((stvec_addr as usize) & 0b11, 0);
+    unsafe {
+        stvec::write(stvec_addr as usize, mtvec::TrapMode::Direct);
+        let stvec_ret = stvec::read();
+        // stvec uses WARL. (Write any values, read legal values)
+
+        println!(
+            "stvec address: Wrote: {:?}. Read: {:?}",
+            stvec_addr,
+            stvec_ret.address() as *const u8
+        );
+
+        println!(
+            "stvec wrote:   Wrote: {:?}. Read: {:?}",
+            mtvec::TrapMode::Direct,
+            stvec_ret.trap_mode()
+        );
+    }
+
+    unsafe {
+        sie::set_ssoft();
+        sie::set_stimer();
+        sie::set_sext();
+
+        sstatus::set_sie();
+    }
+
+    let sie_val = sie::read();
+    println!("sie       = {:?}", sie_val);
+    println!(" .ssoft   = {:?}", sie_val.ssoft());
+    println!(" .stimer  = {:?}", sie_val.stimer());
+    println!(" .sext    = {:?}", sie_val.sext());
+    println!(" .usoft   = {:?}", sie_val.usoft());
+    println!(" .utimer  = {:?}", sie_val.utimer());
+    println!(" .uext    = {:?}", sie_val.uext());
+
+    basic_allocator::init();
+    let device_tree = unsafe { dev_tree::get_range(device_tree) };
 
     println!("heart: {}", heart_id);
-    println!("device tree: {:?}, 0x{:x} bytes", device_tree.as_ptr(), device_tree.len());
+    println!(
+        "device tree: {:?}, 0x{:x} bytes",
+        device_tree.as_ptr(),
+        device_tree.len()
+    );
     println!("start_of_memory: {:?}", start_of_memory);
     println!("End of memory: {:?}", end_of_memory);
 
@@ -82,20 +140,37 @@ pub extern "C" fn kmain(heart_id: u32, device_tree: *const u8, start_of_memory: 
     println!("  mode: {:?},", stvec.trap_mode());
     println!("}}");
 
-    println!();    
+    println!();
 
     pagetable::print_current_page_table();
 
+    let timer = BASE_EXTENSION.get_extension::<Timer>().unwrap().unwrap();
+
+    let time = riscv::register::time::read() as u64;
+
+    timer.set_timer(time + 10000000).expect("set_timer");
+
+    /*
+       println!("Intentionally triggering trap");
+       unsafe {
+           (0x6969696969696969 as *const u8).read_volatile();
+       }
+    */
     #[cfg(test)]
     test_main();
 
-    if let Ok(Some(shutdown)) = sbi::BASE_EXTENSION.get_extension::<SystemShutdown>() {
-        if let Err(err) = shutdown.shutdown() {
-            println!("Shutdown command failed: {:?}", err)
+    loop {}
+    // shutdown();
+}
+
+fn shutdown() -> ! {
+    if let Ok(Some(reset)) = sbi::BASE_EXTENSION.get_extension::<SystemResetExtension>() {
+        if let Err(err) = reset.reset(ResetType::Shutdown, sbi::reset::ResetReason::NoReason) {
+            println!("System reset failed: {:?}", err);
         }
     }
-    println!("Shutdown not avalible");
 
+    println!("Shutdown not avalible");
     loop {}
 }
 
@@ -188,77 +263,111 @@ impl Debug for TrapRegisters {
     }
 }
 
+#[naked]
+#[no_mangle]
+#[link_section = ".text.init"]
+pub unsafe extern "C" fn _start() -> ! {
+    asm!(
+        // Set global pointer.
+        ".option push",
+        ".option norelax",
+        "la   gp, __global_pointer",
+        ".option pop",
+        // Setup stack
+        "la   sp, stack_top",
+        "addi sp, sp, -32",
+        "sd   ra, 24(sp)",
+        // Save heart_id and device_tree address.
+        "mv   s0, a0",
+        "mv   s1, a1",
+        // memset(bss_start, 0, bss_end - bss_start)
+        "la   a0, bss_start",
+        "li   a1, 0",
+        "la   a2, bss_end",
+        "sub  a2, a2, a0",
+        "call memset",
+        "mv   a0, s0",             // heart_id: i32
+        "mv   a1, s1",             // device_tree: *const u8
+        "la   a2, _start_of_data", // start_of_data: *const ()
+        "la   a3, _end_of_data",   // end_of_data: *const()
+        "tail kmain",
+        options(noreturn)
+    )
+}
+
 // #[allow(unsupported_naked_functions)]
 #[naked]
 #[no_mangle]
+// Interrupt handle my be aligned to 2k boundry. So we put it in a specific section and make sure the linker script puts this first.
+#[link_section = ".text.trap_entry"]
 pub unsafe extern "C" fn trap_entry() {
     asm!(
         "addi  sp, sp, -31 * 8", /* Allocate stack space */
-        "sd    x1,  0 * 8(sp)",  /* Push registers */
+        "sd    ra,  0 * 8(sp)",  /* Push registers */
         "sd    sp,  1 * 8(sp)", /* fixme: this is saving the updated value of sp. Not it's value *before* the trap was called. */
-        "sd    x3,  2 * 8(sp)",
-        "sd    x4,  3 * 8(sp)",
-        "sd    x5,  4 * 8(sp)",
-        "sd    x6,  5 * 8(sp)",
-        "sd    x7,  6 * 8(sp)",
-        "sd    x8,  7 * 8(sp)",
-        "sd    x9,  8 * 8(sp)",
-        "sd   x10,  9 * 8(sp)",
-        "sd   x11, 10 * 8(sp)",
-        "sd   x12, 11 * 8(sp)",
-        "sd   x13, 12 * 8(sp)",
-        "sd   x14, 13 * 8(sp)",
-        "sd   x15, 14 * 8(sp)",
-        "sd   x16, 15 * 8(sp)",
-        "sd   x17, 16 * 8(sp)",
-        "sd   x18, 17 * 8(sp)",
-        "sd   x19, 18 * 8(sp)",
-        "sd   x20, 19 * 8(sp)",
-        "sd   x21, 20 * 8(sp)",
-        "sd   x22, 21 * 8(sp)",
-        "sd   x23, 22 * 8(sp)",
-        "sd   x24, 23 * 8(sp)",
-        "sd   x25, 24 * 8(sp)",
-        "sd   x26, 25 * 8(sp)",
-        "sd   x27, 26 * 8(sp)",
-        "sd   x28, 27 * 8(sp)",
-        "sd   x29, 28 * 8(sp)",
-        "sd   x30, 29 * 8(sp)",
-        "sd   x31, 30 * 8(sp)",
-        "mv   a0,  sp",
+        "sd    gp,  2 * 8(sp)",
+        "sd    tp,  3 * 8(sp)",
+        "sd    t0,  4 * 8(sp)",
+        "sd    t1,  5 * 8(sp)",
+        "sd    t2,  6 * 8(sp)",
+        "sd    s0,  7 * 8(sp)",
+        "sd    s1,  8 * 8(sp)",
+        "sd    a0,  9 * 8(sp)",
+        "sd    a1, 10 * 8(sp)",
+        "sd    a2, 11 * 8(sp)",
+        "sd    a3, 12 * 8(sp)",
+        "sd    a4, 13 * 8(sp)",
+        "sd    a5, 14 * 8(sp)",
+        "sd    a6, 15 * 8(sp)",
+        "sd    a7, 16 * 8(sp)",
+        "sd    s2, 17 * 8(sp)",
+        "sd    s3, 18 * 8(sp)",
+        "sd    s4, 19 * 8(sp)",
+        "sd    s5, 20 * 8(sp)",
+        "sd    s6, 21 * 8(sp)",
+        "sd    s7, 22 * 8(sp)",
+        "sd    s8, 23 * 8(sp)",
+        "sd    s9, 24 * 8(sp)",
+        "sd   s10, 25 * 8(sp)",
+        "sd   s11, 26 * 8(sp)",
+        "sd    t3, 27 * 8(sp)",
+        "sd    t4, 28 * 8(sp)",
+        "sd    t5, 29 * 8(sp)",
+        "sd    t6, 30 * 8(sp)",
+        "mv    a0, sp",
         "call trap",
         /* Pop registers */
-        "ld    x1,  0 * 8(sp)",
-        "ld    x2,  1 * 8(sp)",
-        "ld    x3,  2 * 8(sp)",
-        "ld    x4,  3 * 8(sp)",
-        "ld    x5,  4 * 8(sp)",
-        "ld    x6,  5 * 8(sp)",
-        "ld    x7,  6 * 8(sp)",
-        "ld    x8,  7 * 8(sp)",
-        "ld    x9,  8 * 8(sp)",
-        "ld   x10,  9 * 8(sp)",
-        "ld   x11, 10 * 8(sp)",
-        "ld   x12, 11 * 8(sp)",
-        "ld   x13, 12 * 8(sp)",
-        "ld   x14, 13 * 8(sp)",
-        "ld   x15, 14 * 8(sp)",
-        "ld   x16, 15 * 8(sp)",
-        "ld   x17, 16 * 8(sp)",
-        "ld   x18, 17 * 8(sp)",
-        "ld   x19, 18 * 8(sp)",
-        "ld   x20, 19 * 8(sp)",
-        "ld   x21, 20 * 8(sp)",
-        "ld   x22, 21 * 8(sp)",
-        "ld   x23, 22 * 8(sp)",
-        "ld   x24, 23 * 8(sp)",
-        "ld   x25, 24 * 8(sp)",
-        "ld   x26, 25 * 8(sp)",
-        "ld   x27, 26 * 8(sp)",
-        "ld   x28, 27 * 8(sp)",
-        "ld   x29, 28 * 8(sp)",
-        "ld   x30, 29 * 8(sp)",
-        "ld   x31, 30 * 8(sp)",
+        "ld    ra,  0 * 8(sp)", /* Push registers */
+        "ld    sp,  1 * 8(sp)", /* fixme: this is saving the updated value of sp. Not it's value *before* the trap was called. */
+        "ld    gp,  2 * 8(sp)",
+        "ld    tp,  3 * 8(sp)",
+        "ld    t0,  4 * 8(sp)",
+        "ld    t1,  5 * 8(sp)",
+        "ld    t2,  6 * 8(sp)",
+        "ld    s0,  7 * 8(sp)",
+        "ld    s1,  8 * 8(sp)",
+        "ld    a0,  9 * 8(sp)",
+        "ld    a1, 10 * 8(sp)",
+        "ld    a2, 11 * 8(sp)",
+        "ld    a3, 12 * 8(sp)",
+        "ld    a4, 13 * 8(sp)",
+        "ld    a5, 14 * 8(sp)",
+        "ld    a6, 15 * 8(sp)",
+        "ld    a7, 16 * 8(sp)",
+        "ld    s2, 17 * 8(sp)",
+        "ld    s3, 18 * 8(sp)",
+        "ld    s4, 19 * 8(sp)",
+        "ld    s5, 20 * 8(sp)",
+        "ld    s6, 21 * 8(sp)",
+        "ld    s7, 22 * 8(sp)",
+        "ld    s8, 23 * 8(sp)",
+        "ld    s9, 24 * 8(sp)",
+        "ld   s10, 25 * 8(sp)",
+        "ld   s11, 26 * 8(sp)",
+        "ld    t3, 27 * 8(sp)",
+        "ld    t4, 28 * 8(sp)",
+        "ld    t5, 29 * 8(sp)",
+        "ld    t6, 30 * 8(sp)",
         "addi  sp, sp, 31 * 8", /* Deallocate stack space */
         "sret",
         options(noreturn)
@@ -269,26 +378,62 @@ pub unsafe extern "C" fn trap_entry() {
 extern "C" fn trap(regs: &mut TrapRegisters) {
     let sepc = sepc::read();
     let sstatus = sstatus::read();
-    let sip = sip::read();
     let sie = sie::read();
     let scause = scause::read();
-
-    println!("In function trap");
-    println!("sepc = {:}", sepc);
-    println!("sstatus = {:?}", sstatus);
-    println!("sip = {:?}", sip);
-    println!("sie = {:?}", sie);
-    println!("scause = 0x{:x}", scause.bits());
-    println!("scause.code = {:?}", scause.code());
-    println!("scause.cause = {:?}", scause.cause());
-    println!("regs = {:#?}", regs);
-    let instruction = unsafe { *(sepc as *const u32) };
-    println!("pc = {:x}", sepc);
-    println!("ins = {:x}", instruction);
+    let stval = stval::read();
 
     match scause.cause() {
-        Trap::Interrupt(int) => println!("Interrupt: {:?}", int),
-        Trap::Exception(ex) => panic!("Supervisor exception {:?}", ex),
+        Trap::Interrupt(int) => match int {
+            scause::Interrupt::UserSoft => {
+                println!("USER SOFTWARE INTERRUPT");
+            }
+            scause::Interrupt::SupervisorSoft => {
+                println!("SUPERVISOR SOFTWARE INTERRUPT");
+            }
+            scause::Interrupt::UserTimer => {
+                println!("USER TIMER");
+            }
+            scause::Interrupt::SupervisorTimer => {
+                let time = riscv::register::time::read() as u64;
+                println!("TIMER: {:>10}", time);
+                let timer = BASE_EXTENSION.get_extension::<Timer>().unwrap().unwrap();
+                timer.set_timer(time + 10000000).expect("set_timer");
+            }
+            scause::Interrupt::UserExternal => {
+                println!("USER EXTERNAL INTERRUPT");
+            }
+            scause::Interrupt::SupervisorExternal => {
+                println!("SUPERVISOR EXTERNAL INTERRUPT");
+            }
+            scause::Interrupt::Unknown => {
+                println!("Unknown interupt")
+            }
+        },
+        Trap::Exception(ex) => {
+            println!("*** EXCECPTION ***");
+            println!("sepc    = 0x{:x}", sepc);
+            println!("sstatus = {:?}", sstatus);
+            println!(" .sie   = {:?}", sstatus.sie());
+            println!(" .spie  = {:?}", sstatus.spie());
+            println!(" .spp   = {:?}", sstatus.spp());
+
+            println!(" .uie   = {:?}", sstatus.uie());
+            println!(" .upie  = {:?}", sstatus.upie());
+
+            println!(" .fs    = {:?}", sstatus.fs());
+            println!(" .xs    = {:?}", sstatus.xs());
+            println!("sie     = {:?}", sie);
+            println!("scause  = 0x{:x}", scause.bits());
+            println!(" .code  = {:?}", scause.code());
+            println!(" .cause = {:?}", scause.cause());
+            println!("stval   = 0x{:x}", stval);
+            println!("regs    = {:#?}", regs);
+            let instruction = unsafe { *(sepc as *const u32) };
+            println!("pc      = 0x{:x}", sepc);
+            println!("ins     = 0x{:08x}", instruction);
+
+            panic!("Supervisor exception {:?}", ex);
+        }
     }
 }
 

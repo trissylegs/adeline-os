@@ -1,12 +1,24 @@
-
 #[allow(dead_code)]
 mod call;
+use core::mem::transmute;
+
 use call::*;
 use conquer_once::spin::OnceCell;
+use riscv::register::{
+    marchid::{self, Marchid},
+    mimpid::Mimpid,
+    mvendorid::{self, Mvendorid},
+};
 use spin::Mutex;
+
+pub mod reset;
+pub mod timer;
 
 #[repr(transparent)]
 pub struct ExtensionId(isize);
+
+#[repr(transparent)]
+pub struct FunctionId(isize);
 
 #[derive(Clone, Copy)]
 pub struct SbiRet {
@@ -69,23 +81,6 @@ impl Default for SbiError {
 
 pub type SbiResult<T> = Result<T, SbiError>;
 
-pub fn sbi_get_spec_version() -> SbiResult<isize> {
-    unsafe {
-        let result = sbi_call0(SbiBaseExtension::id());
-        result.into()
-    }
-}
-
-pub fn sbi_probe_extension(extension_id: ExtensionId) -> SbiResult<isize> {
-    unsafe {
-        let result = sbi_call1(
-            extension_id.0 as usize,
-            SbiBaseExtension::id(),
-        );
-        result.into()
-    }
-}
-
 pub trait SbiExtension {
     fn id() -> ExtensionId;
     unsafe fn from_probe(i: isize) -> Self;
@@ -96,6 +91,14 @@ pub struct SbiBaseExtension {
 }
 
 pub const BASE_EXTENSION: SbiBaseExtension = SbiBaseExtension { _n: () };
+
+pub const BASE_GET_SPEC_VERSION: FunctionId = FunctionId(0x0);
+pub const BASE_GET_IMP_ID: FunctionId = FunctionId(0x1);
+pub const BASE_GET_IMP_VERSION: FunctionId = FunctionId(0x2);
+pub const BASE_PROBE_EXT: FunctionId = FunctionId(0x3);
+pub const BASE_GET_MVENDORID: FunctionId = FunctionId(0x4);
+pub const BASE_GET_MARCHID: FunctionId = FunctionId(0x5);
+pub const BASE_GET_MIMPID: FunctionId = FunctionId(0x6);
 
 impl SbiExtension for SbiBaseExtension {
     fn id() -> ExtensionId {
@@ -109,17 +112,65 @@ impl SbiExtension for SbiBaseExtension {
 }
 
 impl SbiBaseExtension {
-    pub fn get_spec_version(&self) -> SbiResult<isize> {
-        sbi_get_spec_version()
+    pub fn get_spec_version() -> SbiResult<isize> {
+        unsafe {
+            let result = sbi_call0(Self::id(), BASE_GET_SPEC_VERSION);
+            result.into()
+        }
+    }
+
+    pub fn get_impl_id() -> SbiResult<isize> {
+        unsafe {
+            let result = sbi_call0(Self::id(), BASE_GET_IMP_ID);
+            result.into()
+        }
+    }
+
+    pub fn get_impl_version() -> SbiResult<isize> {
+        unsafe {
+            let result = sbi_call0(Self::id(), BASE_GET_IMP_VERSION);
+            result.into()
+        }
     }
 
     pub fn get_extension<E>(&self) -> SbiResult<Option<E>>
     where
         E: SbiExtension,
     {
-        match sbi_probe_extension(E::id())? {
+        let result = unsafe {
+            sbi_call1(E::id().0 as usize, SbiBaseExtension::id(), BASE_PROBE_EXT).into_result()
+        };
+
+        match result? {
             0 => Ok(None),
             n => unsafe { Ok(Some(E::from_probe(n))) },
+        }
+    }
+
+    pub fn get_mvendorid(&self) -> SbiResult<Option<Mvendorid>> {
+        let result = unsafe { sbi_call0(Self::id(), BASE_GET_MVENDORID).into_result() };
+        match result? {
+            0 => Ok(None),
+            // Mvendorid only has a private constructor.
+            n => Ok(Some(unsafe { transmute::<_, Mvendorid>(n) })),
+        }
+    }
+
+    pub fn get_marchid(&self) -> SbiResult<Option<Marchid>> {
+        let result = unsafe { sbi_call0(Self::id(), BASE_GET_MARCHID).into_result() };
+        match result? {
+            0 => Ok(None),
+            // Mvendorid only has a private constructor.
+            n => Ok(Some(unsafe { transmute::<_, Marchid>(n) })),
+        }
+    }
+
+    pub fn get_mimpid(&self) -> SbiResult<Option<Mimpid>> {
+        let result = unsafe { sbi_call0(Self::id(), BASE_GET_MIMPID).into_result() };
+        match result? {
+            0 => Ok(None),
+            // Mvendorid only has a private constructor.
+            n => Ok(Some(unsafe { transmute::<_, Mimpid>(n) })),
         }
     }
 }
@@ -127,6 +178,8 @@ impl SbiBaseExtension {
 pub struct ConsolePutChar {
     _n: (),
 }
+
+const CONSOLE_PUTCHAR: FunctionId = FunctionId(0x0);
 
 impl SbiExtension for ConsolePutChar {
     fn id() -> ExtensionId {
@@ -141,7 +194,7 @@ impl SbiExtension for ConsolePutChar {
 impl ConsolePutChar {
     pub fn put_char(&self, ch: u8) {
         unsafe {
-            sbi_call1(ch as usize, Self::id())
+            sbi_call1(ch as usize, Self::id(), CONSOLE_PUTCHAR)
                 .into_result()
                 .expect("sbi_put_char");
         }
@@ -162,12 +215,20 @@ impl SbiExtension for ConsoleGetChar {
     }
 }
 
+const CONSOLE_GETCHAR: FunctionId = FunctionId(0);
+
 impl ConsoleGetChar {
     pub fn get_char(&self) -> SbiResult<Option<u8>> {
         unsafe {
-            sbi_call0(Self::id())
+            sbi_call0(Self::id(), CONSOLE_GETCHAR)
                 .into_result()
-                .map(|i| if i >= 0 && i <= 255 { Some(i as u8) } else { None })
+                .map(|i| {
+                    if i >= 0 && i <= 255 {
+                        Some(i as u8)
+                    } else {
+                        None
+                    }
+                })
         }
     }
 }
@@ -175,6 +236,8 @@ impl ConsoleGetChar {
 pub struct SystemShutdown {
     _n: (),
 }
+
+const SYSTEM_SHUTDOWN: FunctionId = FunctionId(0x0);
 
 impl SbiExtension for SystemShutdown {
     fn id() -> ExtensionId {
@@ -189,7 +252,7 @@ impl SbiExtension for SystemShutdown {
 impl SystemShutdown {
     pub fn shutdown(&self) -> Result<!, SbiError> {
         unsafe {
-            let SbiRet { error, .. } = sbi_call0(Self::id());
+            let SbiRet { error, .. } = sbi_call0(Self::id(), SYSTEM_SHUTDOWN);
             Err(error.into())
         }
     }
@@ -228,13 +291,9 @@ pub fn stdio() -> &'static Mutex<SbiIO> {
 }
 
 pub fn init_io(base: &SbiBaseExtension) -> SbiResult<()> {
-    let put_char = base.get_extension::<ConsolePutChar>()?        
-        .unwrap();
-    let get_char = base.get_extension::<ConsoleGetChar>()?
-        .unwrap();
-    _IO.init_once(|| {        
-        Mutex::new(SbiIO { put_char, get_char })
-    });
+    let put_char = base.get_extension::<ConsolePutChar>()?.unwrap();
+    let get_char = base.get_extension::<ConsoleGetChar>()?.unwrap();
+    _IO.init_once(|| Mutex::new(SbiIO { put_char, get_char }));
     Ok(())
 }
 

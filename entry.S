@@ -41,6 +41,14 @@ _start:
         .cfi_endproc
 
 
+        .type test_illegal_instruction, @function
+        .global test_illegal_instruction
+test_illegal_instruction:
+        .cfi_startproc
+        .4byte 0x6969669696  
+
+        .cfi_endproc
+
 
         .global _constants
 _constants:
