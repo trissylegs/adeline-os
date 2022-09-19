@@ -11,6 +11,7 @@ use riscv::register::{
 };
 use spin::Mutex;
 
+pub mod hart;
 pub mod reset;
 pub mod timer;
 

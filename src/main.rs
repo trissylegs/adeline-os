@@ -21,6 +21,7 @@ mod uart;
 use core::{
     arch::asm,
     fmt::{Debug, Write},
+    sync::atomic::AtomicUsize,
 };
 use fdt_rs::{
     base::DevTree,
@@ -34,6 +35,7 @@ use riscv::register::{
 };
 
 use crate::sbi::{
+    hart::{HartId, HartMask, Hsm},
     reset::{ResetType, SystemResetExtension},
     timer::Timer,
     SystemShutdown, BASE_EXTENSION,
@@ -49,6 +51,8 @@ extern "C" {
     pub static __global_pointer: usize;
     pub static __uart_base_addr: usize;
 }
+
+pub static ALL_HARTS: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
 pub extern "C" fn kmain(
@@ -143,6 +147,18 @@ pub extern "C" fn kmain(
     println!();
 
     pagetable::print_current_page_table();
+
+    let hsm = BASE_EXTENSION.get_extension::<Hsm>().unwrap().unwrap();
+
+    let harts: HartMask = (0..32).into();
+
+    for id in harts {
+        let status = hsm.hart_get_status(id);
+        match status {
+            Ok(status) => println!("{:?}: {:?}", id, status),
+            Err(err) => println!("{:?} invalid: ({:?})", id, err),
+        }
+    }
 
     let timer = BASE_EXTENSION.get_extension::<Timer>().unwrap().unwrap();
 
