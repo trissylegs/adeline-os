@@ -130,7 +130,7 @@ pub struct RentativeSuspendType(pub u32);
 pub struct NonRentativeSuspendType(pub u32);
 
 impl RentativeSuspendType {
-    const DEFAULT_RETENTIVE_SUSPEND: RentativeSuspendType = RentativeSuspendType(0x00000000);
+    pub const DEFAULT_RETENTIVE_SUSPEND: RentativeSuspendType = RentativeSuspendType(0x00000000);
 }
 impl Default for RentativeSuspendType {
     fn default() -> Self {
@@ -139,7 +139,7 @@ impl Default for RentativeSuspendType {
 }
 
 impl NonRentativeSuspendType {
-    const DEFAULT_NON_RETENTIVE_SUSPEND: NonRentativeSuspendType =
+    pub const DEFAULT_NON_RETENTIVE_SUSPEND: NonRentativeSuspendType =
         NonRentativeSuspendType(0x80000000);
 }
 
@@ -191,12 +191,8 @@ impl Hsm {
         })
     }
 
-    pub fn hart_rentative_suspend(
-        &self,
-        suspend_type: RentativeSuspendType,
-        opaque: usize,
-    ) -> SbiResult<()> {
-        unsafe { self.hart_suspend(suspend_type.0, 0, opaque) }
+    pub fn hart_rentative_suspend(&self, suspend_type: RentativeSuspendType) -> SbiResult<()> {
+        unsafe { self.hart_suspend(suspend_type.0, 0, 0) }
     }
 
     unsafe fn hart_non_rentative_suspend(
@@ -219,7 +215,7 @@ impl Hsm {
             resume_addr,
             opaque,
             Self::id(),
-            HSM_HART_START,
+            HSM_HART_SUSPEND,
         )
         .into_result();
         result.map(|_| ())

@@ -35,7 +35,7 @@ use riscv::register::{
 };
 
 use crate::sbi::{
-    hart::{HartId, HartMask, Hsm},
+    hart::{HartId, HartMask, Hsm, RentativeSuspendType},
     reset::{ResetType, SystemResetExtension},
     timer::Timer,
     SystemShutdown, BASE_EXTENSION,
@@ -175,7 +175,11 @@ pub extern "C" fn kmain(
     #[cfg(test)]
     test_main();
 
-    loop {}
+    loop {
+        println!("Suspending!");
+        let suspend = hsm.hart_rentative_suspend(RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND);
+        println!("Suspend result: {:?}", suspend);
+    }
     // shutdown();
 }
 
