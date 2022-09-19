@@ -10,7 +10,7 @@ impl SbiExtension for SystemResetExtension {
         ExtensionId(0x53525354)
     }
 
-    unsafe fn from_probe(i: isize) -> Self {
+    unsafe fn from_probe(_i: isize) -> Self {
         SystemResetExtension { _n: () }
     }
 }
@@ -48,9 +48,7 @@ impl Into<usize> for ResetReason {
 
 impl SystemResetExtension {
     pub fn reset(&self, reset_type: ResetType, reason: ResetReason) -> SbiResult<!> {
-        let result = unsafe {
-            sbi_call2(reset_type.into(), reason.into(), Self::id(), SRST_RESET).into_result()
-        };
+        let result = unsafe { sbi_call2(reset_type.into(), reason.into(), Self::id(), SRST_RESET) };
         result.map(|v| panic!("Returned for System reset with success! value = {:?}", v))
     }
 }

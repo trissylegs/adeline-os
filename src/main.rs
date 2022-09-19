@@ -14,6 +14,7 @@ mod basic_allocator;
 mod dev_tree;
 mod io;
 mod pagetable;
+mod panic;
 mod sbi;
 mod traits;
 mod uart;
@@ -28,17 +29,20 @@ use fdt_rs::{
     prelude::{FallibleIterator, PropReader},
 };
 use riscv::register::{
-    mstatus::set_spie,
+    marchid::Marchid,
     mtvec,
+    mvendorid::Mvendorid,
     scause::{self, Trap},
-    sepc, sie, sip, sstatus, stval, stvec,
+    sepc, sie, sstatus, stval, stvec,
 };
+use sbi::base::{SbiImplementionId, SbiSpecVersion};
+use snafu::Snafu;
 
 use crate::sbi::{
-    hart::{HartId, HartMask, Hsm, RentativeSuspendType},
+    base::BASE_EXTENSION,
+    hart::{HartMask, Hsm, RentativeSuspendType},
     reset::{ResetType, SystemResetExtension},
     timer::Timer,
-    SystemShutdown, BASE_EXTENSION,
 };
 
 extern "C" {
@@ -54,6 +58,30 @@ extern "C" {
 
 pub static ALL_HARTS: AtomicUsize = AtomicUsize::new(0);
 
+#[derive(Debug)]
+pub struct KernelInfo {
+    sbi_spec_version: SbiSpecVersion,
+    sbi_impl_id: SbiImplementionId,
+    sbi_impl_version: isize,
+    mvendor_id: Mvendorid,
+    march_id: Marchid,
+}
+/*
+impl KernelInfo {
+    fn init() -> Result<KernelInfo, SbiError> {
+        let sbi_spec_versionm = BASE_EXTENSION.get_spec_version();
+        let sbi_impl_id = BASE_EXTENSION.get_impl_id();
+        let sbi_
+    }
+}
+ */
+
+#[derive(Debug, Snafu)]
+enum Error {
+    #[snafu(display("Sbi Error "))]
+    SbiError { error: sbi::SbiError },
+}
+
 #[no_mangle]
 pub extern "C" fn kmain(
     heart_id: u32,
@@ -61,7 +89,7 @@ pub extern "C" fn kmain(
     start_of_memory: *const (),
     end_of_memory: *const (),
 ) -> ! {
-    sbi::init_io(&sbi::BASE_EXTENSION).unwrap();
+    sbi::init_io(&sbi::base::BASE_EXTENSION).unwrap();
     println!("Hello, world");
 
     let stvec_addr = trap_entry as *const u8;
@@ -101,7 +129,6 @@ pub extern "C" fn kmain(
     println!(" .utimer  = {:?}", sie_val.utimer());
     println!(" .uext    = {:?}", sie_val.uext());
 
-    basic_allocator::init();
     let device_tree = unsafe { dev_tree::get_range(device_tree) };
 
     println!("heart: {}", heart_id);
@@ -111,39 +138,7 @@ pub extern "C" fn kmain(
         device_tree.len()
     );
     println!("start_of_memory: {:?}", start_of_memory);
-    println!("End of memory: {:?}", end_of_memory);
-
-    let sstatus = sstatus::read();
-    println!("Sstatus {{");
-    println!("  uie: {},", sstatus.uie());
-    println!("  sie: {},", sstatus.sie());
-    println!("  upie: {},", sstatus.upie());
-    println!("  spie: {},", sstatus.spie());
-    println!("  spp: {:?},", sstatus.spp());
-    println!("  fs: {:?},", sstatus.fs());
-    println!("  xs: {:?},", sstatus.xs());
-    println!("  sum: {},", sstatus.sum());
-    println!("  mxr: {},", sstatus.mxr());
-    println!("  sd: {},", sstatus.sd());
-    println!("}}");
-
-    let sstatus = sie::read();
-    println!("Sstatus {{");
-    println!("  usoft: {},", sstatus.usoft());
-    println!("  ssoft: {},", sstatus.ssoft());
-    println!("  utimer: {},", sstatus.utimer());
-    println!("  utimer: {},", sstatus.utimer());
-    println!("  stimer: {},", sstatus.stimer());
-    println!("  uext: {},", sstatus.uext());
-    println!("  sext: {},", sstatus.sext());
-    println!("}}");
-
-    let stvec = stvec::read();
-    println!("Stvec {{");
-    println!("  address: {:x},", stvec.address());
-    println!("  mode: {:?},", stvec.trap_mode());
-    println!("}}");
-
+    println!("end_of_memory: {:?}", end_of_memory);
     println!();
 
     pagetable::print_current_page_table();
@@ -184,7 +179,7 @@ pub extern "C" fn kmain(
 }
 
 fn shutdown() -> ! {
-    if let Ok(Some(reset)) = sbi::BASE_EXTENSION.get_extension::<SystemResetExtension>() {
+    if let Ok(Some(reset)) = BASE_EXTENSION.get_extension::<SystemResetExtension>() {
         if let Err(err) = reset.reset(ResetType::Shutdown, sbi::reset::ResetReason::NoReason) {
             println!("System reset failed: {:?}", err);
         }
@@ -579,33 +574,6 @@ where
     }
 
     Ok(())
-}
-
-mod panic {
-    use crate::sbi::{self, stdio, SystemShutdown};
-    use core::fmt::Write;
-    use core::panic::PanicInfo;
-
-    #[panic_handler]
-    #[no_mangle]
-    pub fn panic(info: &PanicInfo) -> ! {
-        let io = stdio();
-        unsafe {
-            io.force_unlock();
-        }
-
-        writeln!(&mut *io.lock(), "{info}").ok();
-        abort();
-    }
-
-    #[no_mangle]
-    pub extern "C" fn abort() -> ! {
-        if let Ok(Some(shutdown)) = sbi::BASE_EXTENSION.get_extension::<SystemShutdown>() {
-            shutdown.shutdown().ok();
-        }
-
-        loop {}
-    }
 }
 
 pub trait Testable {

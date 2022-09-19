@@ -7,6 +7,7 @@ edition = "2021"
 riscv = "0.7"
 volatile = "0.4.4"
 smallvec = "1.8"
+cfg-if = "1"
 
 [dependencies.linked_list_allocator]
 version = "0.9"
@@ -26,4 +27,8 @@ default-features = false
 
 [dependencies.conquer-once]
 version = "0.3"
+default-features = false
+
+[dependencies.snafu]
+version = "0.7"
 default-features = false

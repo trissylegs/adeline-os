@@ -1,7 +1,7 @@
 use super::*;
 use core::arch::asm;
 
-pub unsafe fn sbi_call0(ext: ExtensionId, func: FunctionId) -> SbiRet {
+pub unsafe fn sbi_call0(ext: ExtensionId, func: FunctionId) -> SbiResult<isize> {
     let mut error: isize;
     let mut value: isize;
 
@@ -13,13 +13,14 @@ pub unsafe fn sbi_call0(ext: ExtensionId, func: FunctionId) -> SbiRet {
         lateout("a1") value,
     );
 
-    return SbiRet {
+    SbiRet {
         error: error.into(),
         value,
-    };
+    }
+    .into_result(ext, func)
 }
 
-pub unsafe fn sbi_call1(a0: usize, ext: ExtensionId, func: FunctionId) -> SbiRet {
+pub unsafe fn sbi_call1(a0: usize, ext: ExtensionId, func: FunctionId) -> SbiResult<isize> {
     let mut error: isize;
     let mut value: isize;
 
@@ -32,13 +33,19 @@ pub unsafe fn sbi_call1(a0: usize, ext: ExtensionId, func: FunctionId) -> SbiRet
         lateout("a1") value,
     );
 
-    return SbiRet {
+    SbiRet {
         error: error.into(),
         value,
-    };
+    }
+    .into_result(ext, func)
 }
 
-pub unsafe fn sbi_call2(a0: usize, a1: usize, ext: ExtensionId, func: FunctionId) -> SbiRet {
+pub unsafe fn sbi_call2(
+    a0: usize,
+    a1: usize,
+    ext: ExtensionId,
+    func: FunctionId,
+) -> SbiResult<isize> {
     let mut error: isize;
     let mut value: isize;
 
@@ -52,10 +59,11 @@ pub unsafe fn sbi_call2(a0: usize, a1: usize, ext: ExtensionId, func: FunctionId
         lateout("a1") value,
     );
 
-    return SbiRet {
+    SbiRet {
         error: error.into(),
         value,
-    };
+    }
+    .into_result(ext, func)
 }
 
 pub unsafe fn sbi_call3(
@@ -64,7 +72,7 @@ pub unsafe fn sbi_call3(
     a2: usize,
     ext: ExtensionId,
     func: FunctionId,
-) -> SbiRet {
+) -> SbiResult<isize> {
     let mut error: isize;
     let mut value: isize;
 
@@ -79,10 +87,11 @@ pub unsafe fn sbi_call3(
         lateout("a1") value,
     );
 
-    return SbiRet {
+    SbiRet {
         error: error.into(),
         value,
-    };
+    }
+    .into_result(ext, func)
 }
 
 pub unsafe fn sbi_call4(
@@ -92,7 +101,7 @@ pub unsafe fn sbi_call4(
     a3: usize,
     ext: ExtensionId,
     func: FunctionId,
-) -> SbiRet {
+) -> SbiResult<isize> {
     let mut error: isize;
     let mut value: isize;
 
@@ -108,10 +117,11 @@ pub unsafe fn sbi_call4(
         lateout("a1") value,
     );
 
-    return SbiRet {
+    SbiRet {
         error: error.into(),
         value,
-    };
+    }
+    .into_result(ext, func)
 }
 
 pub unsafe fn sbi_call5(
@@ -122,7 +132,7 @@ pub unsafe fn sbi_call5(
     a4: usize,
     ext: ExtensionId,
     func: FunctionId,
-) -> SbiRet {
+) -> SbiResult<isize> {
     let mut error: isize;
     let mut value: isize;
 
@@ -139,10 +149,11 @@ pub unsafe fn sbi_call5(
         lateout("a1") value,
     );
 
-    return SbiRet {
+    SbiRet {
         error: error.into(),
         value,
-    };
+    }
+    .into_result(ext, func)
 }
 
 pub unsafe fn sbi_call6(
@@ -154,7 +165,7 @@ pub unsafe fn sbi_call6(
     a5: usize,
     ext: ExtensionId,
     func: FunctionId,
-) -> SbiRet {
+) -> SbiResult<isize> {
     let mut error: isize;
     let mut value: isize;
 
@@ -172,8 +183,9 @@ pub unsafe fn sbi_call6(
         lateout("a1") value,
     );
 
-    return SbiRet {
+    SbiRet {
         error: error.into(),
         value,
-    };
+    }
+    .into_result(ext, func)
 }

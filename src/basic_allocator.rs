@@ -1,8 +1,7 @@
-use core::{sync::atomic::AtomicBool};
+use core::sync::atomic::AtomicBool;
 use linked_list_allocator::LockedHeap;
 
-
-const BASIC_POOL_SIZE: usize = 65_535;
+const BASIC_POOL_SIZE: usize = 1024 * 1024;
 
 // Mutable so it get's linked into the correct section. mut keyword may not actually be nessasary.
 static mut BASIC_POOL: BasicPoolMemory = BasicPoolMemory::new();
@@ -13,13 +12,13 @@ static HEAP: LockedHeap = LockedHeap::empty();
 
 #[repr(align(4096))]
 struct BasicPoolMemory {
-    pool: [u8; BASIC_POOL_SIZE]
+    pool: [u8; BASIC_POOL_SIZE],
 }
 
 impl BasicPoolMemory {
     const fn new() -> BasicPoolMemory {
         BasicPoolMemory {
-            pool: [0; BASIC_POOL_SIZE]
+            pool: [0; BASIC_POOL_SIZE],
         }
     }
 
@@ -34,7 +33,7 @@ pub(crate) fn init() {
     }
     unsafe {
         let (bottom, size) = BASIC_POOL.range();
-        
+
         let mut heap = HEAP.lock();
         heap.init(bottom, size);
     }

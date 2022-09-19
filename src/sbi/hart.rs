@@ -1,8 +1,7 @@
-use core::iter::FromIterator;
-
 use super::{
+    base::SbiExtension,
     call::{sbi_call0, sbi_call1, sbi_call3},
-    FunctionId, SbiExtension, SbiResult,
+    FunctionId, SbiResult,
 };
 
 pub struct Hsm {
@@ -167,19 +166,18 @@ impl Hsm {
         start_addr: usize,
         opaque: usize,
     ) -> SbiResult<()> {
-        let result =
-            sbi_call3(hartid.0, start_addr, opaque, Self::id(), HSM_HART_START).into_result();
-        result.map(|_| ())
+        sbi_call3(hartid.0, start_addr, opaque, Self::id(), HSM_HART_START)?;
+        Ok(())
     }
 
     pub unsafe fn hart_stop(&self) -> SbiResult<!> {
-        let result = sbi_call0(Self::id(), HSM_HART_START).into_result();
-        result.map(|_| panic!("sbi_hart_stop RETURNED WITHOUT ERROR"))
+        sbi_call0(Self::id(), HSM_HART_START)?;
+        panic!("sbi_hart_stop RETURNED WITHOUT ERROR");
     }
 
     pub fn hart_get_status(&self, hartid: HartId) -> SbiResult<HartState> {
-        let result = unsafe { sbi_call1(hartid.0, Self::id(), HSM_HART_GET_STATUS).into_result() };
-        result.map(|i| match i {
+        let i = unsafe { sbi_call1(hartid.0, Self::id(), HSM_HART_GET_STATUS) }?;
+        Ok(match i {
             0 => HartState::Started,
             1 => HartState::Stopped,
             2 => HartState::StartPending,
@@ -210,14 +208,13 @@ impl Hsm {
         resume_addr: usize,
         opaque: usize,
     ) -> SbiResult<()> {
-        let result = sbi_call3(
+        sbi_call3(
             suspend_type as usize,
             resume_addr,
             opaque,
             Self::id(),
             HSM_HART_SUSPEND,
-        )
-        .into_result();
-        result.map(|_| ())
+        )?;
+        Ok(())
     }
 }
