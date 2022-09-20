@@ -1,14 +1,17 @@
 #[allow(dead_code)]
 mod call;
 
-use core::fmt::{self, Display, Formatter};
+use core::{
+    fmt::{self, Display, Formatter},
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use call::*;
 use conquer_once::spin::OnceCell;
 
 use spin::Mutex;
 
-use self::base::{SbiBaseExtension, SbiExtension, BASE_EXTENSION};
+use self::base::{SbiExtension, BASE_EXTENSION};
 
 pub mod base;
 pub mod hart;
@@ -183,7 +186,7 @@ impl Display for SbiError {
         if let Some(extension) = self.extension.desc() {
             write!(f, ": {}", extension)?;
             if let Some(func_desc) = self.function.desc(self.extension) {
-                write!(f, ", {}", func_desc);
+                write!(f, ", {}", func_desc)?;
             }
         }
 
@@ -244,6 +247,11 @@ impl SbiExtension for ConsolePutChar {
 
 impl ConsolePutChar {
     pub fn put_char(&self, ch: u8) {
+        if SBI_CONSOLE_BLOCKED.load(Ordering::Relaxed) {
+            // Hopefully this is not being called by panic which should be using UART anyway.
+            panic!("Attempted to write to SBI console when UART is already inialized.");
+        }
+
         unsafe {
             sbi_call1(ch as usize, Self::id(), CONSOLE_PUTCHAR).expect("sbi_put_char");
         }
@@ -268,6 +276,11 @@ const CONSOLE_GETCHAR: FunctionId = FunctionId(0);
 
 impl ConsoleGetChar {
     pub fn get_char(&self) -> SbiResult<Option<u8>> {
+        if SBI_CONSOLE_BLOCKED.load(Ordering::Relaxed) {
+            // Hopefully this is not being called by panic which should be using UART anyway.
+            panic!("Attempted to write to SBI console when UART is already inialized.");
+        }
+
         let i = unsafe { sbi_call0(Self::id(), CONSOLE_GETCHAR)? };
         if i >= 0 && i <= 255 {
             Ok(Some(i as u8))
@@ -330,32 +343,25 @@ impl SbiIO {
 }
 
 pub fn stdio() -> &'static Mutex<SbiIO> {
+    if SBI_CONSOLE_BLOCKED.load(Ordering::Relaxed) {
+        panic!("Attempted to initialize Sbi console when UART is already inialized.")
+    }
     _IO.get().unwrap()
 }
 
 pub fn init_io() -> SbiResult<()> {
+    if SBI_CONSOLE_BLOCKED.load(Ordering::Relaxed) {
+        panic!("Attempted to initialize Sbi console when UART is already inialized.")
+    }
+
     let put_char = BASE_EXTENSION.get_extension::<ConsolePutChar>()?.unwrap();
     let get_char = BASE_EXTENSION.get_extension::<ConsoleGetChar>()?.unwrap();
     _IO.init_once(|| Mutex::new(SbiIO { put_char, get_char }));
     Ok(())
 }
 
-#[doc(hidden)]
-pub fn _print(args: core::fmt::Arguments) {
-    let mut lock = stdio().lock();
-    core::fmt::Write::write_fmt(&mut *lock, args).ok();
-}
+const SBI_CONSOLE_BLOCKED: AtomicBool = AtomicBool::new(false);
 
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => {
-        $crate::sbi::_print(format_args!($($arg)*))
-    };
-}
-
-#[macro_export]
-macro_rules! println {
-    () => { $crate::sbi::_print(format_args!("\n")) };
-    ($fmt:expr) => ($crate::print!(concat!($fmt, "\n")));
-    ($fmt:expr, $($arg:tt)*) => ($crate::print!(concat!($fmt, "\n"), $($arg)*));
+pub(crate) fn block_sbi_console() {
+    SBI_CONSOLE_BLOCKED.store(true, Ordering::Relaxed);
 }

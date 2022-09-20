@@ -1,30 +1,45 @@
+use core::fmt::{Debug, Formatter};
+
 use alloc::vec::Vec;
 use anyhow::Error;
 use fdt_rs::prelude::*;
 use fdt_rs::{base::DevTree, index::DevTreeIndex};
+use spin::Once;
 
 use crate::sbi::base::BASE_EXTENSION;
 use crate::sbi::hart::HartId;
 use crate::sbi::reset::SystemResetExtension;
 use crate::{print, println, sbi};
 
+static HW_INFO: Once<HwInfo> = Once::INIT;
+
 pub type PhysicalAddress = usize;
 
 pub type PHandle = u32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhysicalAddressRange {
     pub base: PhysicalAddress,
     pub len: usize,
 }
 
-#[derive(Debug, Clone, derive_builder::Builder)]
+impl Debug for PhysicalAddressRange {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PhysicalAddressRange")
+            .field("base", &format_args!("0x{:08x}", self.base))
+            .field("len", &format_args!("0x{:08x}", self.len))
+            .finish()
+    }
+}
+
+#[derive(Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct HwInfo {
+    pub tree: DevTree<'static>,
     /// Memory. Currently assuming a single block of RAM.
     pub ram: PhysicalAddressRange,
     // Memory reserved by SBI.
-    #[builder(default, setter(each(name = "add_memory_range")))]
+    #[builder(default, setter(each(name = "add_reserved_memory")))]
     pub reserved_memory: Vec<PhysicalAddressRange>,
     #[builder(setter(each(name = "add_hart")))]
     pub harts: Vec<Hart>,
@@ -32,9 +47,23 @@ pub struct HwInfo {
     pub plic: Plic,
 }
 
+impl Debug for HwInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HwInfo")
+            .field("tree", &"<redacted for size>")
+            .field("ram", &self.ram)
+            .field("reserved_memory", &self.reserved_memory)
+            .field("harts", &self.harts)
+            .field("uart", &self.uart)
+            .field("plic", &self.plic)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Hart {
+    pub name: &'static str,
     pub phandle: PHandle,
     pub hart_id: HartId,
 }
@@ -42,6 +71,7 @@ pub struct Hart {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct UartNS16550a {
+    pub name: &'static str,
     pub reg: PhysicalAddressRange,
     pub interrupts: u32,
     pub interrupt_parent: PHandle,
@@ -51,13 +81,14 @@ pub struct UartNS16550a {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Plic {
+    pub name: &'static str,
     pub phandle: PHandle,
     pub reg: PhysicalAddressRange,
     pub interrupts_extended: Vec<u8>,
 }
 
 pub fn dump_dtb_hex(dtb: *const u8) {
-    sbi::init_io();
+    sbi::init_io().ok();
     let tree = unsafe { DevTree::from_raw_pointer(dtb).map_err(Error::msg).unwrap() };
     let bytes = tree.buf();
     for b in bytes {
@@ -72,12 +103,12 @@ pub fn dump_dtb_hex(dtb: *const u8) {
         .reset(
             crate::sbi::reset::ResetType::Shutdown,
             crate::sbi::reset::ResetReason::NoReason,
-        );
-    loop {}
+        )
+        .unwrap();
 }
 
 pub fn dump_dtb(dtb: *const u8) {
-    sbi::init_io();
+    sbi::init_io().unwrap();
 
     let tree = unsafe { DevTree::from_raw_pointer(dtb).map_err(Error::msg).unwrap() };
     let index_layout = DevTreeIndex::get_layout(&tree).map_err(Error::msg).unwrap();
@@ -105,25 +136,52 @@ pub fn dump_dtb(dtb: *const u8) {
         .reset(
             crate::sbi::reset::ResetType::Shutdown,
             crate::sbi::reset::ResetReason::NoReason,
-        );
-    loop {}
+        )
+        .unwrap();
 }
 
-pub fn walk_dtb(dtb: *const u8) -> anyhow::Result<HwInfo> {
-    let tree = unsafe { DevTree::from_raw_pointer(dtb).map_err(Error::msg)? };
+pub fn setup_dtb(dtb: *const u8) -> &'static HwInfo {
+    HW_INFO.call_once(|| {
+        let dt: DevTree<'static> = match unsafe { DevTree::from_raw_pointer(dtb) } {
+            Ok(dt) => dt,
+            Err(err) => {
+                crate::sbi::init_io().unwrap();
+                panic!("Error parsing Device Tree: {}", err);
+            }
+        };
+        let hwinfo = match walk_dtb(dt) {
+            Ok(hwinfo) => hwinfo,
+            Err(err) => {
+                crate::sbi::init_io().unwrap();
+                panic!("Error parsing Device Tree: {}", err);
+            }
+        };
+
+        hwinfo
+    })
+}
+
+fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
     let index_layout = DevTreeIndex::get_layout(&tree).map_err(Error::msg)?;
 
-    let mut buffer = alloc::vec![0u8; index_layout.size()];
-    let slice = buffer.as_mut_slice();
+    let mut index_buffer = alloc::vec![0u8; index_layout.size()];
+    let slice = index_buffer.as_mut_slice();
 
     let index = DevTreeIndex::new(tree, slice).map_err(Error::msg)?;
 
     let mut hwinfo = HwInfoBuilder::default();
+    hwinfo.tree(tree);
 
     for node in index.compatible_nodes("riscv") {
         let mut hart = HartBuilder::default();
-
         let mut is_cpu = false;
+
+        if let Ok(name) = node.name() {
+            hart.name(name);
+        } else {
+            continue;
+        };
+
         for prop in node.props() {
             if prop.name() == Ok("device_type") && prop.str() == Ok("cpu") {
                 is_cpu = true;
@@ -149,6 +207,12 @@ pub fn walk_dtb(dtb: *const u8) -> anyhow::Result<HwInfo> {
 
     for node in index.compatible_nodes("ns16550a") {
         let mut uart = UartNS16550aBuilder::default();
+
+        if let Ok(name) = node.name() {
+            uart.name(name);
+        } else {
+            continue;
+        };
 
         for prop in node.props() {
             match prop.name() {
@@ -187,6 +251,12 @@ pub fn walk_dtb(dtb: *const u8) -> anyhow::Result<HwInfo> {
 
     for node in index.compatible_nodes("sifive,plic-1.0.0") {
         let mut plic = PlicBuilder::default();
+        if let Ok(name) = node.name() {
+            plic.name(name);
+        } else {
+            continue;
+        };
+
         for prop in node.props() {
             match prop.name() {
                 Ok("phandle") => {
@@ -219,8 +289,19 @@ pub fn walk_dtb(dtb: *const u8) -> anyhow::Result<HwInfo> {
     for node in index.nodes() {
         if node.name() == Ok("reserved-memory") {
             for range in node.children() {
-                let reg = range.props().find(|p| p.name() == Ok("reg"));
+                if let Some(reg) = range.props().find(|p| p.name() == Ok("reg")) {
+                    let base = reg.u64(0).unwrap();
+                    let len = reg.u64(1).unwrap();
+                    hwinfo.add_reserved_memory(PhysicalAddressRange {
+                        base: base as usize,
+                        len: len as usize,
+                    });
+                    // Only prop we need or expect to find.
+                    break;
+                }
             }
+            // We're done with this node.
+            continue;
         }
 
         let mut is_ram = false;

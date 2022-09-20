@@ -64,20 +64,15 @@ pub extern "C" fn kmain(
     end_of_memory: *const (),
 ) -> ! {
     basic_allocator::init();
-    hwinfo::dump_dtb_hex(dtb);
+    // hwinfo::dump_dtb_hex(dtb);
 
-    let hwinfo = match hwinfo::walk_dtb(dtb) {
-        Ok(hwinfo) => hwinfo,
-        Err(err) => {
-            sbi::init_io().unwrap();
-            panic!("Error reading DTB: {}", err)
-        }
-    };
+    let hwinfo = hwinfo::setup_dtb(dtb);
 
-    console::init(&hwinfo);
+    console::init(hwinfo);
 
     let stvec_addr = trap_entry as *const u8;
     assert_eq!((stvec_addr as usize) & 0b11, 0);
+
     unsafe {
         stvec::write(stvec_addr as usize, mtvec::TrapMode::Direct);
         let stvec_ret = stvec::read();
@@ -122,13 +117,11 @@ pub extern "C" fn kmain(
 
     let hsm = BASE_EXTENSION.get_extension::<Hsm>().unwrap().unwrap();
 
-    let harts: HartMask = (0..32).into();
-
-    for id in harts {
-        let status = hsm.hart_get_status(id);
+    for hart in &hwinfo.harts {
+        let status = hsm.hart_get_status(hart.hart_id);
         match status {
-            Ok(status) => println!("{:?}: {:?}", id, status),
-            Err(err) => println!("{:?} invalid: ({:?})", id, err),
+            Ok(status) => println!("{:?}: {:?}", hart.hart_id, status),
+            Err(err) => println!("{:?} invalid: ({:?})", hart.hart_id, err),
         }
     }
 
@@ -592,4 +585,13 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 #[test_case]
 fn hello_world() {
     println!("Hello world!");
+}
+
+#[macro_export]
+macro_rules! wait_for {
+    ($cond:expr) => {
+        while !$cond {
+            core::hint::spin_loop()
+        }
+    };
 }
