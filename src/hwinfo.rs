@@ -3,7 +3,10 @@ use anyhow::Error;
 use fdt_rs::prelude::*;
 use fdt_rs::{base::DevTree, index::DevTreeIndex};
 
+use crate::sbi::base::BASE_EXTENSION;
 use crate::sbi::hart::HartId;
+use crate::sbi::reset::SystemResetExtension;
+use crate::{print, println, sbi};
 
 pub type PhysicalAddress = usize;
 
@@ -18,8 +21,11 @@ pub struct PhysicalAddressRange {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct HwInfo {
-    // Currently assuming a single block of RAM.
+    /// Memory. Currently assuming a single block of RAM.
     pub ram: PhysicalAddressRange,
+    // Memory reserved by SBI.
+    #[builder(default, setter(each(name = "add_memory_range")))]
+    pub reserved_memory: Vec<PhysicalAddressRange>,
     #[builder(setter(each(name = "add_hart")))]
     pub harts: Vec<Hart>,
     pub uart: UartNS16550a,
@@ -48,6 +54,59 @@ pub struct Plic {
     pub phandle: PHandle,
     pub reg: PhysicalAddressRange,
     pub interrupts_extended: Vec<u8>,
+}
+
+pub fn dump_dtb_hex(dtb: *const u8) {
+    sbi::init_io();
+    let tree = unsafe { DevTree::from_raw_pointer(dtb).map_err(Error::msg).unwrap() };
+    let bytes = tree.buf();
+    for b in bytes {
+        print!("{:02x}", b);
+    }
+    println!();
+
+    BASE_EXTENSION
+        .get_extension::<SystemResetExtension>()
+        .unwrap()
+        .unwrap()
+        .reset(
+            crate::sbi::reset::ResetType::Shutdown,
+            crate::sbi::reset::ResetReason::NoReason,
+        );
+    loop {}
+}
+
+pub fn dump_dtb(dtb: *const u8) {
+    sbi::init_io();
+
+    let tree = unsafe { DevTree::from_raw_pointer(dtb).map_err(Error::msg).unwrap() };
+    let index_layout = DevTreeIndex::get_layout(&tree).map_err(Error::msg).unwrap();
+
+    let mut buffer = alloc::vec![0u8; index_layout.size()];
+    let slice = buffer.as_mut_slice();
+
+    let index = DevTreeIndex::new(tree, slice).unwrap();
+
+    for node in index.nodes() {
+        let name = node.name().unwrap();
+        println!("{} {{", name);
+        for prop in node.props() {
+            let name = prop.name().unwrap();
+            let value = prop.raw();
+            println!("  {} = {:?}", name, value);
+        }
+        println!("}}");
+    }
+
+    BASE_EXTENSION
+        .get_extension::<SystemResetExtension>()
+        .unwrap()
+        .unwrap()
+        .reset(
+            crate::sbi::reset::ResetType::Shutdown,
+            crate::sbi::reset::ResetReason::NoReason,
+        );
+    loop {}
 }
 
 pub fn walk_dtb(dtb: *const u8) -> anyhow::Result<HwInfo> {
@@ -158,6 +217,12 @@ pub fn walk_dtb(dtb: *const u8) -> anyhow::Result<HwInfo> {
     }
 
     for node in index.nodes() {
+        if node.name() == Ok("reserved-memory") {
+            for range in node.children() {
+                let reg = range.props().find(|p| p.name() == Ok("reg"));
+            }
+        }
+
         let mut is_ram = false;
         let mut reg = None;
         for prop in node.props() {

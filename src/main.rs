@@ -64,10 +64,12 @@ pub extern "C" fn kmain(
     end_of_memory: *const (),
 ) -> ! {
     basic_allocator::init();
+    hwinfo::dump_dtb_hex(dtb);
+
     let hwinfo = match hwinfo::walk_dtb(dtb) {
         Ok(hwinfo) => hwinfo,
         Err(err) => {
-            sbi::init_io(&sbi::base::BASE_EXTENSION).unwrap();
+            sbi::init_io().unwrap();
             panic!("Error reading DTB: {}", err)
         }
     };

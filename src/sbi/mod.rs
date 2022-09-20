@@ -8,7 +8,7 @@ use conquer_once::spin::OnceCell;
 
 use spin::Mutex;
 
-use self::base::{SbiBaseExtension, SbiExtension};
+use self::base::{SbiBaseExtension, SbiExtension, BASE_EXTENSION};
 
 pub mod base;
 pub mod hart;
@@ -333,9 +333,9 @@ pub fn stdio() -> &'static Mutex<SbiIO> {
     _IO.get().unwrap()
 }
 
-pub fn init_io(base: &SbiBaseExtension) -> SbiResult<()> {
-    let put_char = base.get_extension::<ConsolePutChar>()?.unwrap();
-    let get_char = base.get_extension::<ConsoleGetChar>()?.unwrap();
+pub fn init_io() -> SbiResult<()> {
+    let put_char = BASE_EXTENSION.get_extension::<ConsolePutChar>()?.unwrap();
+    let get_char = BASE_EXTENSION.get_extension::<ConsoleGetChar>()?.unwrap();
     _IO.init_once(|| Mutex::new(SbiIO { put_char, get_char }));
     Ok(())
 }
