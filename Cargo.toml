@@ -41,3 +41,8 @@ default-features = false
 [dependencies.anyhow]
 version = "1"
 default-features = false
+
+[dependencies.crossbeam-queue]
+version = "0.3"
+default-features = false
+features = ["alloc"]
