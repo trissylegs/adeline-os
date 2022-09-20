@@ -19,35 +19,35 @@ pub struct PhysicalAddressRange {
 #[builder(no_std)]
 pub struct HwInfo {
     // Currently assuming a single block of RAM.
-    ram: PhysicalAddressRange,
+    pub ram: PhysicalAddressRange,
     #[builder(setter(each(name = "add_hart")))]
-    harts: Vec<Hart>,
-    uart: UartNS16550a,
-    plic: Plic,
+    pub harts: Vec<Hart>,
+    pub uart: UartNS16550a,
+    pub plic: Plic,
 }
 
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Hart {
-    phandle: PHandle,
-    hart_id: HartId,
+    pub phandle: PHandle,
+    pub hart_id: HartId,
 }
 
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct UartNS16550a {
-    reg: PhysicalAddressRange,
-    interrupts: u32,
-    interrupt_parent: PHandle,
-    clock_freq: u32,
+    pub reg: PhysicalAddressRange,
+    pub interrupts: u32,
+    pub interrupt_parent: PHandle,
+    pub clock_freq: u32,
 }
 
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Plic {
-    phandle: PHandle,
-    reg: PhysicalAddressRange,
-    interrupts_extended: Vec<u8>,
+    pub phandle: PHandle,
+    pub reg: PhysicalAddressRange,
+    pub interrupts_extended: Vec<u8>,
 }
 
 pub fn walk_dtb(dtb: *const u8) -> anyhow::Result<HwInfo> {

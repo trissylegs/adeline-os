@@ -12,6 +12,7 @@ extern crate alloc;
 
 mod basic_allocator;
 
+mod console;
 mod hwinfo;
 mod io;
 mod pagetable;
@@ -70,6 +71,8 @@ pub extern "C" fn kmain(
             panic!("Error reading DTB: {}", err)
         }
     };
+
+    console::init(&hwinfo);
 
     let stvec_addr = trap_entry as *const u8;
     assert_eq!((stvec_addr as usize) & 0b11, 0);
