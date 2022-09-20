@@ -35,6 +35,6 @@ pub(crate) fn init() {
         let (bottom, size) = BASIC_POOL.range();
 
         let mut heap = HEAP.lock();
-        heap.init(bottom, size);
+        heap.init(bottom as *mut u8, size);
     }
 }
