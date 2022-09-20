@@ -29,7 +29,7 @@ impl BasicPoolMemory {
 
 pub(crate) fn init() {
     if HAS_INIT.swap(true, core::sync::atomic::Ordering::Acquire) {
-        panic!("Already initialized basic_heap.");
+        return;
     }
     unsafe {
         let (bottom, size) = BASIC_POOL.range();

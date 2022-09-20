@@ -11,33 +11,28 @@
 extern crate alloc;
 
 mod basic_allocator;
-mod dev_tree;
+
+mod hwinfo;
 mod io;
 mod pagetable;
 mod panic;
 mod sbi;
 mod task;
 mod traits;
-mod uart;
 
 use core::{
     arch::asm,
     fmt::{Debug, Write},
-    sync::atomic::AtomicUsize,
 };
 use fdt_rs::{
     base::DevTree,
     prelude::{FallibleIterator, PropReader},
 };
 use riscv::register::{
-    marchid::Marchid,
     mtvec,
-    mvendorid::Mvendorid,
     scause::{self, Trap},
     sepc, sie, sstatus, stval, stvec,
 };
-use sbi::base::{SbiImplementionId, SbiSpecVersion};
-use snafu::Snafu;
 
 use crate::{
     sbi::{
@@ -45,7 +40,6 @@ use crate::{
         hart::{HartMask, Hsm, RentativeSuspendType},
         reset::{ResetType, SystemResetExtension},
         timer::Timer,
-        ConsoleGetChar,
     },
     task::{simple_executor::SimpleExecutor, Task},
 };
@@ -61,43 +55,21 @@ extern "C" {
     pub static __uart_base_addr: usize;
 }
 
-pub static ALL_HARTS: AtomicUsize = AtomicUsize::new(0);
-
-#[derive(Debug)]
-pub struct KernelInfo {
-    sbi_spec_version: SbiSpecVersion,
-    sbi_impl_id: SbiImplementionId,
-    sbi_impl_version: isize,
-    mvendor_id: Mvendorid,
-    march_id: Marchid,
-}
-/*
-impl KernelInfo {
-    fn init() -> Result<KernelInfo, SbiError> {
-        let sbi_spec_versionm = BASE_EXTENSION.get_spec_version();
-        let sbi_impl_id = BASE_EXTENSION.get_impl_id();
-        let sbi_
-    }
-}
- */
-
-#[derive(Debug, Snafu)]
-enum Error {
-    #[snafu(display("Sbi Error "))]
-    SbiError { error: sbi::SbiError },
-}
-
 #[no_mangle]
 pub extern "C" fn kmain(
     heart_id: u32,
-    device_tree: *const u8,
+    dtb: *const u8,
     start_of_memory: *const (),
     end_of_memory: *const (),
 ) -> ! {
-    sbi::init_io(&sbi::base::BASE_EXTENSION).unwrap();
-    println!("Hello, world");
-
     basic_allocator::init();
+    let hwinfo = match hwinfo::walk_dtb(dtb) {
+        Ok(hwinfo) => hwinfo,
+        Err(err) => {
+            sbi::init_io(&sbi::base::BASE_EXTENSION).unwrap();
+            panic!("Error reading DTB: {}", err)
+        }
+    };
 
     let stvec_addr = trap_entry as *const u8;
     assert_eq!((stvec_addr as usize) & 0b11, 0);
@@ -136,14 +108,7 @@ pub extern "C" fn kmain(
     println!(" .utimer  = {:?}", sie_val.utimer());
     println!(" .uext    = {:?}", sie_val.uext());
 
-    let device_tree = unsafe { dev_tree::get_range(device_tree) };
-
     println!("heart: {}", heart_id);
-    println!(
-        "device tree: {:?}, 0x{:x} bytes",
-        device_tree.as_ptr(),
-        device_tree.len()
-    );
     println!("start_of_memory: {:?}", start_of_memory);
     println!("end_of_memory: {:?}", end_of_memory);
     println!();
@@ -176,11 +141,6 @@ pub extern "C" fn kmain(
     */
     #[cfg(test)]
     test_main();
-
-    let getchar = BASE_EXTENSION
-        .get_extension::<ConsoleGetChar>()
-        .unwrap()
-        .unwrap();
 
     let mut executor = SimpleExecutor::new();
     executor.spawn(Task::new(example_task()));
@@ -226,8 +186,8 @@ pub struct Plic {
 
 #[derive(Debug)]
 pub struct MemoryRange {
-    base: usize,
-    size: usize,
+    pub base: usize,
+    pub size: usize,
 }
 
 #[repr(C)]
@@ -627,20 +587,4 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 #[test_case]
 fn hello_world() {
     println!("Hello world!");
-}
-
-fn _uart_init() {
-    unsafe {
-        uart::UartDriver::init(uart::Config {
-            name: "uart@10000000",
-            interrupts: 0x0a,
-            interrupt_parent: 0x03,
-            clock_frequency: 0x00384000,
-            reg: MemoryRange {
-                base: 0x10000000,
-                size: 0x100,
-            },
-            compatible: "ns16550a",
-        })
-    };
 }

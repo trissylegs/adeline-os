@@ -27,6 +27,23 @@ impl SbiExtension for Hsm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HartId(pub usize);
 
+impl From<u32> for HartId {
+    fn from(n: u32) -> Self {
+        HartId(n as usize)
+    }
+}
+impl From<usize> for HartId {
+    fn from(n: usize) -> Self {
+        HartId(n)
+    }
+}
+#[cfg(target_pointer_width = "64")]
+impl From<u64> for HartId {
+    fn from(n: u64) -> Self {
+        HartId(n as usize)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct HartMask {
     pub hart_mask: usize,

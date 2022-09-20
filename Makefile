@@ -16,6 +16,7 @@ MAKE_OPENSBI=$(MAKE) PLATFORM=$(PLATFORM) CROSS_COMPILE=$(CROSS_COMPILE)
 
 QEMU_MACHINE=virt
 QEMU_MEMORY=1G
+QEMU_SMP=4
 
 .phony: build clean run-gdb attach-gdb run
 build:
@@ -32,7 +33,8 @@ run:
 	qemu-system-riscv64 \
 		-machine $(QEMU_MACHINE) \
 		-m $(QEMU_MEMORY) \
-		-serial telnet:localhost:9999,server \
+		-smp $(QEMU_SMP) \
+		-serial mon:stdio \
 		-bios ../opensbi/build/platform/generic/firmware/fw_jump.elf \
 		-kernel target/riscv64gc-unknown-none-elf/debug/kernel
 
@@ -40,7 +42,8 @@ run-gdb:
 	qemu-system-riscv64 \
 		-machine $(QEMU_MACHINE) \
 		-m $(QEMU_MEMORY) \
-		-serial vc:80Cx24C \
+		-smp $(QEMU_SMP) \
+		-serial mon:stdio \
 		-gdb tcp::1234 -S \
 		-bios ../opensbi/build/platform/generic/firmware/fw_jump.elf \
 		-kernel target/riscv64gc-unknown-none-elf/debug/kernel
@@ -49,6 +52,7 @@ dump-dtb:
 	qemu-system-riscv64 \
 		-machine $(QEMU_MACHINE) \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_SMP) \
 		-machine dumpdtb=qemu-virt.dtb
 	dtc -I dtb -O dts qemu-virt.dtb -o qemu-virt.dts
 
