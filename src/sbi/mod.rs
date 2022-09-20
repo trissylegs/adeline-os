@@ -6,6 +6,8 @@ use conquer_once::spin::OnceCell;
 
 use spin::Mutex;
 
+use crate::io::Read;
+
 use self::base::{SbiBaseExtension, SbiExtension};
 
 pub mod base;

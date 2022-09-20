@@ -16,6 +16,7 @@ mod io;
 mod pagetable;
 mod panic;
 mod sbi;
+mod task;
 mod traits;
 mod uart;
 
@@ -38,11 +39,15 @@ use riscv::register::{
 use sbi::base::{SbiImplementionId, SbiSpecVersion};
 use snafu::Snafu;
 
-use crate::sbi::{
-    base::BASE_EXTENSION,
-    hart::{HartMask, Hsm, RentativeSuspendType},
-    reset::{ResetType, SystemResetExtension},
-    timer::Timer,
+use crate::{
+    sbi::{
+        base::BASE_EXTENSION,
+        hart::{HartMask, Hsm, RentativeSuspendType},
+        reset::{ResetType, SystemResetExtension},
+        timer::Timer,
+        ConsoleGetChar,
+    },
+    task::{simple_executor::SimpleExecutor, Task},
 };
 
 extern "C" {
@@ -91,6 +96,8 @@ pub extern "C" fn kmain(
 ) -> ! {
     sbi::init_io(&sbi::base::BASE_EXTENSION).unwrap();
     println!("Hello, world");
+
+    basic_allocator::init();
 
     let stvec_addr = trap_entry as *const u8;
     assert_eq!((stvec_addr as usize) & 0b11, 0);
@@ -170,12 +177,30 @@ pub extern "C" fn kmain(
     #[cfg(test)]
     test_main();
 
+    let getchar = BASE_EXTENSION
+        .get_extension::<ConsoleGetChar>()
+        .unwrap()
+        .unwrap();
+
+    let mut executor = SimpleExecutor::new();
+    executor.spawn(Task::new(example_task()));
+    executor.run();
+
     loop {
         println!("Suspending!");
         let suspend = hsm.hart_rentative_suspend(RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND);
         println!("Suspend result: {:?}", suspend);
     }
     // shutdown();
+}
+
+async fn async_number() -> u32 {
+    42
+}
+
+async fn example_task() {
+    let number = async_number().await;
+    println!("async number: {}", number);
 }
 
 fn shutdown() -> ! {

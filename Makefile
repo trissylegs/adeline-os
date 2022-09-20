@@ -28,11 +28,19 @@ clean:
 opensbi:
 	cd ../opensbi && $(MAKE_OPENSBI)
 
+run:
+	qemu-system-riscv64 \
+		-machine $(QEMU_MACHINE) \
+		-m $(QEMU_MEMORY) \
+		-serial telnet:localhost:9999,server \
+		-bios ../opensbi/build/platform/generic/firmware/fw_jump.elf \
+		-kernel target/riscv64gc-unknown-none-elf/debug/kernel
+
 run-gdb:
 	qemu-system-riscv64 \
 		-machine $(QEMU_MACHINE) \
 		-m $(QEMU_MEMORY) \
-		-serial mon:stdio \
+		-serial vc:80Cx24C \
 		-gdb tcp::1234 -S \
 		-bios ../opensbi/build/platform/generic/firmware/fw_jump.elf \
 		-kernel target/riscv64gc-unknown-none-elf/debug/kernel
@@ -50,6 +58,4 @@ attach-gdb:
 		-ex 'add-symbol-file ../opensbi/build/platform/generic/firmware/fw_jump.elf' \
 		-ex 'target remote localhost:1234'
 	killall qemu-system-riscv64
-run:
-	cargo run
 
