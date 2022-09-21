@@ -1,9 +1,10 @@
 mod uart_ns16550a;
 
 use core::fmt::Write;
-use spin::{Mutex, Once};
+use spin::{Mutex, MutexGuard, Once};
 
 use crate::console::uart_ns16550a::MmioSerialPort;
+use crate::sbi::SbiIO;
 use crate::{hwinfo::HwInfo, sbi};
 
 static NS16550A: Once<Mutex<MmioSerialPort>> = Once::INIT;
@@ -18,6 +19,46 @@ pub fn init(info: &HwInfo) {
 
         Mutex::new(sp)
     });
+}
+
+enum UnlockedWriter {
+    Uart(MutexGuard<'static, MmioSerialPort>),
+    Sbi(MutexGuard<'static, SbiIO>),
+}
+
+impl core::fmt::Write for UnlockedWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self {
+            UnlockedWriter::Uart(uart) => uart.write_str(s),
+            UnlockedWriter::Sbi(sbi) => sbi.write_str(s),
+        }
+    }
+
+    fn write_char(&mut self, c: char) -> core::fmt::Result {
+        match self {
+            UnlockedWriter::Uart(uart) => uart.write_char(c),
+            UnlockedWriter::Sbi(sbi) => sbi.write_char(c),
+        }
+    }
+
+    fn write_fmt(self: &mut Self, args: core::fmt::Arguments<'_>) -> core::fmt::Result {
+        match self {
+            UnlockedWriter::Uart(uart) => uart.write_fmt(args),
+            UnlockedWriter::Sbi(sbi) => sbi.write_fmt(args),
+        }
+    }
+}
+
+pub unsafe fn force_unlock() -> impl core::fmt::Write {
+    if let Some(uart) = NS16550A.get() {
+        uart.force_unlock();
+        let lock = uart.lock();
+        UnlockedWriter::Uart(lock)
+    } else {
+        sbi::stdio().force_unlock();
+        let lock = sbi::stdio().lock();
+        UnlockedWriter::Sbi(lock)
+    }
 }
 
 #[doc(hidden)]

@@ -37,7 +37,7 @@ use riscv::register::{
 };
 
 use crate::{
-    isr::plic::MmioPlic,
+    isr::plic::{self, MmioPlic},
     sbi::{
         base::BASE_EXTENSION,
         hart::{Hsm, RentativeSuspendType},
@@ -70,11 +70,10 @@ pub extern "C" fn kmain(
 
     let hwinfo = hwinfo::setup_dtb(dtb);
 
-    console::init(hwinfo);
+    //console::init(hwinfo);
+    sbi::init_io().ok();
 
     println!("{:#?}", hwinfo);
-
-    shutdown();
 
     let stvec_addr = trap_entry as *const u8;
     assert_eq!((stvec_addr as usize) & 0b11, 0);
@@ -97,7 +96,9 @@ pub extern "C" fn kmain(
         );
     }
 
-    let mut _plic = unsafe { MmioPlic::new(&hwinfo) };
+    unsafe {
+        plic::init(hwinfo);
+    }
 
     unsafe {
         sie::set_ssoft();
@@ -400,27 +401,26 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
             }
         },
         Trap::Exception(ex) => {
-            println!("*** EXCECPTION ***");
-            println!("sepc    = 0x{:x}", sepc);
-            println!("sstatus = {:?}", sstatus);
-            println!(" .sie   = {:?}", sstatus.sie());
-            println!(" .spie  = {:?}", sstatus.spie());
-            println!(" .spp   = {:?}", sstatus.spp());
-
-            println!(" .uie   = {:?}", sstatus.uie());
-            println!(" .upie  = {:?}", sstatus.upie());
-
-            println!(" .fs    = {:?}", sstatus.fs());
-            println!(" .xs    = {:?}", sstatus.xs());
-            println!("sie     = {:?}", sie);
-            println!("scause  = 0x{:x}", scause.bits());
-            println!(" .code  = {:?}", scause.code());
-            println!(" .cause = {:?}", scause.cause());
-            println!("stval   = 0x{:x}", stval);
-            println!("regs    = {:#?}", regs);
+            let mut console = unsafe { console::force_unlock() };
+            writeln!(console, "*** EXCECPTION ***").ok();
+            writeln!(console, "sepc    = 0x{:x}", sepc).ok();
+            writeln!(console, "sstatus = {:?}", sstatus).ok();
+            writeln!(console, " .sie   = {:?}", sstatus.sie()).ok();
+            writeln!(console, " .spie  = {:?}", sstatus.spie()).ok();
+            writeln!(console, " .spp   = {:?}", sstatus.spp()).ok();
+            writeln!(console, " .uie   = {:?}", sstatus.uie()).ok();
+            writeln!(console, " .upie  = {:?}", sstatus.upie()).ok();
+            writeln!(console, " .fs    = {:?}", sstatus.fs()).ok();
+            writeln!(console, " .xs    = {:?}", sstatus.xs()).ok();
+            writeln!(console, "sie     = {:?}", sie).ok();
+            writeln!(console, "scause  = 0x{:x}", scause.bits()).ok();
+            writeln!(console, " .code  = {:?}", scause.code()).ok();
+            writeln!(console, " .cause = {:?}", scause.cause()).ok();
+            writeln!(console, "stval   = 0x{:x}", stval).ok();
+            writeln!(console, "regs    = {:#?}", regs).ok();
             let instruction = unsafe { *(sepc as *const u32) };
-            println!("pc      = 0x{:x}", sepc);
-            println!("ins     = 0x{:08x}", instruction);
+            writeln!(console, "pc      = 0x{:x}", sepc).ok();
+            writeln!(console, "ins     = 0x{:08x}", instruction).ok();
 
             panic!("Supervisor exception {:?}", ex);
         }

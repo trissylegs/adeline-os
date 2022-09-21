@@ -16,7 +16,7 @@ MAKE_OPENSBI=$(MAKE) PLATFORM=$(PLATFORM) CROSS_COMPILE=$(CROSS_COMPILE)
 
 QEMU_MACHINE=virt
 QEMU_MEMORY=1G
-QEMU_SMP=4
+QEMU_SMP=1
 
 .phony: build clean run-gdb attach-gdb run
 build:
@@ -35,6 +35,7 @@ run:
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_SMP) \
 		-serial mon:stdio \
+		-d int -D log.txt \
 		-bios ../opensbi/build/platform/generic/firmware/fw_jump.elf \
 		-kernel target/riscv64gc-unknown-none-elf/debug/kernel
 
@@ -44,6 +45,7 @@ run-gdb:
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_SMP) \
 		-serial mon:stdio \
+		-d int -D log.txt \
 		-gdb tcp::1234 -S \
 		-bios ../opensbi/build/platform/generic/firmware/fw_jump.elf \
 		-kernel target/riscv64gc-unknown-none-elf/debug/kernel
@@ -57,7 +59,7 @@ dump-dtb:
 	dtc -I dtb -O dts qemu-virt.dtb -o qemu-virt.dts
 
 attach-gdb:
-	riscv64-elf-gdb \
+	riscv64-unknown-elf-gdb \
 		-ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' \
 		-ex 'add-symbol-file ../opensbi/build/platform/generic/firmware/fw_jump.elf' \
 		-ex 'target remote localhost:1234'

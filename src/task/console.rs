@@ -8,9 +8,9 @@ static UART_QUEUE: Once<ArrayQueue<u8>> = Once::INIT;
 pub fn add_byte(byte: u8) {
     if let Some(queue) = UART_QUEUE.get() {
         if let Err(_) = queue.push(byte) {
-            println!("WARNING: scancode queue full; dropping input");
+            println!("WARNING: serial queue full; dropping input");
         }
     } else {
-        println!("WARNING: scancode queu uninitialized");
+        println!("WARNING: serial queu uninitialized");
     }
 }

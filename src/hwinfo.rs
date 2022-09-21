@@ -88,21 +88,22 @@ pub struct UartNS16550a {
 pub struct Plic {
     pub name: &'static str,
     pub phandle: PHandle,
-    pub number_of_devices: u32,
+    pub number_of_sources: u32,
     pub reg: PhysicalAddressRange,
+    // Spefified by interrupts extended.
     #[builder(setter(each(name = "add_context")))]
-    pub interrupts_extended: Vec<PlicContext>,
+    pub contexts: Vec<PlicContext>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct PlicContext {
-    index: u32,
-    interrupt_phandle: Phandle,
+    pub index: usize,
+    pub interrupt_phandle: Phandle,
     // I can't figure out what this is.
     // If it's u32::MAX it's not present.
     // If it's '9' it is.
-    interrupt_cause: InterruptCause,
-    hart_id: HartId,
+    pub interrupt_cause: InterruptCause,
+    pub hart_id: HartId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -356,7 +357,7 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
                     }
                 }
                 Ok("riscv,ndev") => {
-                    plic.number_of_devices(prop.u32(0).unwrap());
+                    plic.number_of_sources(prop.u32(0).unwrap());
                 }
                 Ok("reg") => {
                     if let (Ok(base), Ok(len)) = (prop.u64(0), prop.u64(1)) {
@@ -383,7 +384,7 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
                                 .find(|h| h.interrupt_handle == phandle)
                             {
                                 plic.add_context(PlicContext {
-                                    index: index as u32,
+                                    index: index,
                                     interrupt_phandle: phandle,
                                     interrupt_cause: cause,
                                     hart_id: hart.hart_id,

@@ -1,15 +1,14 @@
 use core::{
     mem::size_of,
     num::NonZeroU32,
+    str,
     sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
-use crate::{hwinfo::HwInfo, sbi::hart::HartId};
-
-pub type Context = u32;
+use crate::{hwinfo::HwInfo, println, sbi::hart::HartId};
 
 const PLIC_SIZE: usize = 0x10000 / 4;
 
@@ -27,15 +26,25 @@ const CONTEXT_CLAIM: usize = 0x04;
 const PLIC_DISABLE_THRESHOLD: usize = 0x7;
 const PLIC_ENABLE_THRESHOLD: usize = 0x0;
 
+#[derive(Debug)]
 pub struct MmioPlic {
-    enable_locks: Vec<Mutex<()>>,
     addr: AtomicPtr<u8>,
+    contexts: Vec<Context>,
+    number_of_sources: u32,
+}
+
+#[derive(Debug)]
+pub struct Context {
+    index: usize,
+    hart_id: HartId,
+    hart_base: AtomicPtr<u32>,
+    enable_base: AtomicPtr<u32>,
 }
 
 pub static PLIC: Once<Mutex<MmioPlic>> = Once::INIT;
 
 pub unsafe fn init(hwinfo: &HwInfo) {
-    PLIC.call_once(|| Mutex::new(MmioPlic::new(hwinfo)));
+    PLIC.call_once(|| Mutex::new(MmioPlic::init(hwinfo)));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -55,107 +64,65 @@ impl From<u32> for InterruptId {
 }
 
 impl MmioPlic {
-    pub unsafe fn new(info: &HwInfo) -> Self {
-        // Usually 0x0C00_0000
-        // Comments will assme this address in future. To match SiFive's documetnations.
-        let mut enable_locks = Vec::with_capacity(info.harts.len());
-        for _ in &info.harts {
-            enable_locks.push(Mutex::new(()));
+    unsafe fn init(info: &HwInfo) -> Self {
+        let mut base = info.plic.reg.base as *mut u8;
+        let number_of_sources = info.plic.number_of_sources;
+
+        let mut contexts = Vec::with_capacity(info.plic.contexts.len());
+
+        for ctx in &info.plic.contexts {
+            let index = ctx.index;
+            let hart_id = ctx.hart_id;
+            let hart_base =
+                AtomicPtr::new(base.add(CONTEXT_BASE).add(CONTEXT_SIZE * ctx.index) as *mut u32);
+            let enable_base = AtomicPtr::new(
+                base.add(CONTEXT_ENABLE_BASE)
+                    .add(CONTEXT_ENABLE_SIZE * ctx.index) as *mut u32,
+            );
+
+            let mut ctx = Context {
+                index,
+                hart_id,
+                hart_base,
+                enable_base,
+            };
+
+            for irq in 1..number_of_sources {
+                ctx.toggle(irq, false);
+                let priority = base
+                    .add(PRIORITY_BASE)
+                    .add((irq as usize) * PRIORITY_PER_ID);
+
+                priority.write_volatile(1);
+            }
         }
 
-        Self {
-            enable_locks,
-            addr: AtomicPtr::new(info.plic.reg.base as *mut _),
-        }
+        let mut plic = Self {
+            number_of_sources,
+            addr: AtomicPtr::new(base),
+            contexts,
+        };
+
+        println!("{:#?}", plic);
+
+        plic
     }
-    /*
-       pub fn toggle(&self, irq: InterruptId, enable: bool) {
-           let _lock = self.enable_locks.lock();
-           let hwirq = irq.get();
+}
 
-           unsafe {
-               let reg = self
-                   .addr
-                   .load(Ordering::Relaxed)
-                   .add((hwirq as usize / 32) * size_of::<u32>()) as *mut u32;
-               let mask = 1 << (hwirq % 32);
-
-               if enable {
-                   reg.write_volatile(reg.read_volatile() | mask);
-               } else {
-                   reg.write_volatile(reg.read_volatile() & !mask);
-               }
-           }
-
-           drop(_lock);
-       }
-    */
-
-    pub fn context_for(&self, hart: HartId) -> Context {
-        // Assming S-mode
-        u32::try_from(hart.0).expect("hartid too big") * 2 + 1
-    }
-
-    pub fn priority(&self, source: u32) -> &AtomicU32 {
-        if source < 1 || source > 511 {
-            panic!("Invalid interrupt source: {}", source);
-        }
+impl Context {
+    fn toggle(&mut self, irq: u32, enable: bool) {
         unsafe {
-            let addr = self
-                .addr
+            let reg = self
+                .enable_base
                 .load(Ordering::Relaxed)
-                .add((source as usize) * size_of::<u32>()) as *mut AtomicU32;
+                .add((irq as usize / 32) * size_of::<u32>());
+            let mask = 1 << (irq % 32);
 
-            &*addr
+            if enable {
+                reg.write_volatile(reg.read_volatile() | mask);
+            } else {
+                reg.write_volatile(reg.read_volatile() & !mask);
+            }
         }
-    }
-
-    fn pending_array(&self) -> &[AtomicU32; 0x14] {
-        unsafe {
-            let addr = self.addr.load(Ordering::Relaxed).add(0x1000) as *mut [AtomicU32; 0x14];
-            &*addr
-        }
-    }
-
-    fn pending(&self, source: u32) -> bool {
-        let arr = self.pending_array();
-        let source = source as usize;
-        arr[source / 32].load(Ordering::Relaxed) & (1 << (source % 32)) != 0
-    }
-
-    fn enables(&self, hart: HartId) -> &[AtomicU32; 0x14] {
-        let base_addr = self.addr.load(Ordering::Relaxed);
-        let hart = hart.0;
-
-        unsafe {
-            let addr = base_addr.add(0x2000 + (0x80 * hart) + 0x80) as *mut _;
-            &*addr
-        }
-    }
-
-    fn toggle_irq(&self, hart: HartId, irq: InterruptId, enable: bool) {
-        // Because we have to read-modify-write a register we a lock to esnure it happens all at once.
-        let lock = self.enable_locks[hart.0 as usize].lock();
-        let irq = irq.get();
-        let reg = &self.enables(hart)[(irq as usize) / 32];
-        let mask = 1 << (irq % 32);
-
-        let read = reg.load(Ordering::Relaxed);
-        if enable {
-            reg.store(read | mask, Ordering::Relaxed);
-        } else {
-            reg.store(read & !mask, Ordering::Relaxed);
-        }
-
-        drop(lock);
-    }
-
-    fn priority_threshold(&self, _hart: HartId) -> &AtomicU32 {
-        let base = self.addr.load(Ordering::Relaxed);
-
-        unsafe {
-            let _addr = base.add(20);
-        }
-        todo!()
     }
 }
