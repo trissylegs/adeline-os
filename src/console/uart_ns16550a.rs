@@ -61,28 +61,28 @@ impl MmioSerialPort {
         let self_modem_ctrl = self.modem_ctrl.load(Ordering::Relaxed);
         unsafe {
             // Disable interrupts
-            self_int_en.write(0x00);
+            self_int_en.write_volatile(0x00);
 
             // Enable DLAB
-            self_line_ctrl.write(0x80);
+            self_line_ctrl.write_volatile(0x80);
 
             // Set maximum speed to 38400 bps by configuring DLL and DLM
-            self_data.write(0x03);
-            self_int_en.write(0x00);
+            self_data.write_volatile(0x03);
+            self_int_en.write_volatile(0x00);
 
             // Disable DLAB and set data word length to 8 bits
-            self_line_ctrl.write(0x03);
+            self_line_ctrl.write_volatile(0x03);
 
             // Enable FIFO, clear TX/RX queues and
             // set interrupt watermark at 14 bytes
-            self_fifo_ctrl.write(0xC7);
+            self_fifo_ctrl.write_volatile(0xC7);
 
             // Mark data terminal ready, signal request to send
             // and enable auxilliary output #2 (used as interrupt line for CPU)
-            self_modem_ctrl.write(0x0B);
+            self_modem_ctrl.write_volatile(0x0B);
 
             // Enable interrupts
-            self_int_en.write(0x01);
+            self_int_en.write_volatile(0x01);
         }
     }
 
@@ -117,6 +117,17 @@ impl MmioSerialPort {
         unsafe {
             wait_for!(self.line_sts().contains(LineStsFlags::INPUT_FULL));
             self_data.read()
+        }
+    }
+
+    pub fn try_receive(&mut self) -> Option<u8> {
+        let self_data = self.data.load(Ordering::Relaxed);
+        unsafe {
+            if self.line_sts().contains(LineStsFlags::INPUT_FULL) {
+                Some(self_data.read_volatile())
+            } else {
+                None
+            }
         }
     }
 }

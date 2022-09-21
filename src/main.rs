@@ -15,6 +15,7 @@ mod basic_allocator;
 mod console;
 mod hwinfo;
 mod io;
+mod isr;
 mod pagetable;
 mod panic;
 mod sbi;
@@ -36,9 +37,10 @@ use riscv::register::{
 };
 
 use crate::{
+    isr::plic::MmioPlic,
     sbi::{
         base::BASE_EXTENSION,
-        hart::{HartMask, Hsm, RentativeSuspendType},
+        hart::{Hsm, RentativeSuspendType},
         reset::{ResetType, SystemResetExtension},
         timer::Timer,
     },
@@ -70,6 +72,10 @@ pub extern "C" fn kmain(
 
     console::init(hwinfo);
 
+    println!("{:#?}", hwinfo);
+
+    shutdown();
+
     let stvec_addr = trap_entry as *const u8;
     assert_eq!((stvec_addr as usize) & 0b11, 0);
 
@@ -90,6 +96,8 @@ pub extern "C" fn kmain(
             stvec_ret.trap_mode()
         );
     }
+
+    let mut _plic = unsafe { MmioPlic::new(&hwinfo) };
 
     unsafe {
         sie::set_ssoft();
@@ -170,22 +178,6 @@ fn shutdown() -> ! {
 
     println!("Shutdown not avalible");
     loop {}
-}
-
-pub struct Plic {
-    phandle: u32,
-    riscv_ndev: u32,
-    reg: MemoryRange,
-    interrupts_extended: [u8; 4],
-    compatible: alloc::vec::Vec<alloc::string::String>,
-    interrupt_cells: u32,
-    address_cells: u32,
-}
-
-#[derive(Debug)]
-pub struct MemoryRange {
-    pub base: usize,
-    pub size: usize,
 }
 
 #[repr(C)]
@@ -383,13 +375,13 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
     match scause.cause() {
         Trap::Interrupt(int) => match int {
             scause::Interrupt::UserSoft => {
-                println!("USER SOFTWARE INTERRUPT");
+                println!("USER SOFTWARE INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::SupervisorSoft => {
-                println!("SUPERVISOR SOFTWARE INTERRUPT");
+                println!("SUPERVISOR SOFTWARE INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::UserTimer => {
-                println!("USER TIMER");
+                println!("USER TIMER: {:x}", stval);
             }
             scause::Interrupt::SupervisorTimer => {
                 let time = riscv::register::time::read() as u64;
@@ -398,13 +390,13 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
                 timer.set_timer(time + 10000000).expect("set_timer");
             }
             scause::Interrupt::UserExternal => {
-                println!("USER EXTERNAL INTERRUPT");
+                println!("USER EXTERNAL INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::SupervisorExternal => {
-                println!("SUPERVISOR EXTERNAL INTERRUPT");
+                println!("SUPERVISOR EXTERNAL INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::Unknown => {
-                println!("Unknown interupt")
+                println!("Unknown interupt: {:x}", stval)
             }
         },
         Trap::Exception(ex) => {

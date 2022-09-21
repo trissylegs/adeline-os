@@ -1,11 +1,15 @@
 use core::fmt::{Debug, Formatter};
+use core::mem::size_of;
+use core::str;
 
 use alloc::vec::Vec;
 use anyhow::Error;
 use fdt_rs::prelude::*;
+use fdt_rs::spec::Phandle;
 use fdt_rs::{base::DevTree, index::DevTreeIndex};
 use spin::Once;
 
+use crate::isr::plic::InterruptId;
 use crate::sbi::base::BASE_EXTENSION;
 use crate::sbi::hart::HartId;
 use crate::sbi::reset::SystemResetExtension;
@@ -66,6 +70,7 @@ pub struct Hart {
     pub name: &'static str,
     pub phandle: PHandle,
     pub hart_id: HartId,
+    pub interrupt_handle: PHandle,
 }
 
 #[derive(Debug, Clone, derive_builder::Builder)]
@@ -73,7 +78,7 @@ pub struct Hart {
 pub struct UartNS16550a {
     pub name: &'static str,
     pub reg: PhysicalAddressRange,
-    pub interrupts: u32,
+    pub interrupt: InterruptId,
     pub interrupt_parent: PHandle,
     pub clock_freq: u32,
 }
@@ -83,8 +88,72 @@ pub struct UartNS16550a {
 pub struct Plic {
     pub name: &'static str,
     pub phandle: PHandle,
+    pub number_of_devices: u32,
     pub reg: PhysicalAddressRange,
-    pub interrupts_extended: Vec<u8>,
+    #[builder(setter(each(name = "add_context")))]
+    pub interrupts_extended: Vec<PlicContext>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlicContext {
+    index: u32,
+    interrupt_phandle: Phandle,
+    // I can't figure out what this is.
+    // If it's u32::MAX it's not present.
+    // If it's '9' it is.
+    interrupt_cause: InterruptCause,
+    hart_id: HartId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum InterruptCause {
+    /// Supervisor software interrupt
+    SupervisorSoft = 1,
+    /// Virtual supervisor software interrupt
+    VirtualSupervisorSoft = 2,
+    /// Machine software interrupt
+    MachineSoft = 3,
+    /// Supervisor timer interrupt
+    SupervisorTimer = 5,
+    /// Virtual supervisor timer interrupt
+    VirtualSupervisorTimer = 6,
+    /// Machine timer interrupt
+    MachineTimer = 7,
+    /// Supervisor external interrupt
+    SupervisorExternal = 9,
+    /// Virtual supervisor external interrupt
+    VirtualSupervisorExternal = 10,
+    /// Machine external interrupt
+    MachineExternal = 11,
+    /// Supervisor guest external interrupt
+    SupervisorGuestExternal = 12,
+}
+
+impl TryFrom<u32> for InterruptCause {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        use InterruptCause::*;
+        match value {
+            1 => Ok(SupervisorSoft),
+            2 => Ok(VirtualSupervisorSoft),
+            3 => Ok(MachineSoft),
+            5 => Ok(SupervisorTimer),
+            6 => Ok(VirtualSupervisorTimer),
+            7 => Ok(MachineTimer),
+            9 => Ok(SupervisorExternal),
+            10 => Ok(VirtualSupervisorExternal),
+            11 => Ok(MachineExternal),
+            12 => Ok(SupervisorGuestExternal),
+            _ => Err(anyhow::anyhow!("Invalid interrupt cause: {}", value)),
+        }
+    }
+}
+
+impl Into<u32> for InterruptCause {
+    fn into(self) -> u32 {
+        self as u32
+    }
 }
 
 pub fn dump_dtb_hex(dtb: *const u8) {
@@ -198,6 +267,28 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
             }
         }
 
+        for child in node.children() {
+            let mut phandle = None;
+            let mut compatible = false;
+            for prop in child.props() {
+                match prop.name() {
+                    Ok("compatible") => {
+                        if prop.str().unwrap().contains("riscv,cpu-intc") {
+                            compatible = true;
+                        }
+                    }
+                    Ok("phandle") => {
+                        phandle = prop.phandle(0).ok();
+                    }
+                    _ => {}
+                }
+            }
+
+            if compatible && phandle.is_some() {
+                hart.interrupt_handle(phandle.unwrap());
+            }
+        }
+
         if is_cpu {
             if let Ok(hart) = hart.build() {
                 hwinfo.add_hart(hart);
@@ -218,7 +309,7 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
             match prop.name() {
                 Ok("interrupts") => {
                     if let Ok(interrupts) = prop.u32(0) {
-                        uart.interrupts(interrupts);
+                        uart.interrupt(InterruptId::from(interrupts));
                     }
                 }
                 Ok("interrupt-parent") => {
@@ -264,6 +355,9 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
                         plic.phandle(phandle);
                     }
                 }
+                Ok("riscv,ndev") => {
+                    plic.number_of_devices(prop.u32(0).unwrap());
+                }
                 Ok("reg") => {
                     if let (Ok(base), Ok(len)) = (prop.u64(0), prop.u64(1)) {
                         let reg = PhysicalAddressRange {
@@ -274,8 +368,29 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
                     }
                 }
                 Ok("interrupts-extended") => {
-                    let value = prop.raw();
-                    plic.interrupts_extended(Vec::from(value));
+                    let entries = prop.length() / size_of::<Phandle>() / 2;
+                    for index in 0..entries {
+                        let phandle = prop.phandle(2 * index as usize).unwrap();
+
+                        if let Ok(cause) =
+                            InterruptCause::try_from(prop.u32(2 * index + 1).unwrap())
+                        {
+                            if let Some(hart) = hwinfo
+                                .harts
+                                .as_ref()
+                                .unwrap()
+                                .iter()
+                                .find(|h| h.interrupt_handle == phandle)
+                            {
+                                plic.add_context(PlicContext {
+                                    index: index as u32,
+                                    interrupt_phandle: phandle,
+                                    interrupt_cause: cause,
+                                    hart_id: hart.hart_id,
+                                });
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
