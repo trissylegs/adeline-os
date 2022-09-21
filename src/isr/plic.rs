@@ -1,8 +1,7 @@
 use core::{
     mem::size_of,
     num::NonZeroU32,
-    str,
-    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+    sync::atomic::{AtomicPtr, Ordering},
 };
 
 use alloc::vec::Vec;
@@ -89,9 +88,9 @@ impl MmioPlic {
 
             for irq in 1..number_of_sources {
                 ctx.toggle(irq, false);
-                let priority = base
-                    .add(PRIORITY_BASE)
-                    .add((irq as usize) * PRIORITY_PER_ID);
+                let priority =
+                    base.add(PRIORITY_BASE)
+                        .add((irq as usize) * PRIORITY_PER_ID) as *mut u32;
 
                 priority.write_volatile(1);
             }

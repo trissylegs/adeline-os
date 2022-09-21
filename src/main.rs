@@ -70,8 +70,7 @@ pub extern "C" fn kmain(
 
     let hwinfo = hwinfo::setup_dtb(dtb);
 
-    //console::init(hwinfo);
-    sbi::init_io().ok();
+    console::init(hwinfo);
 
     println!("{:#?}", hwinfo);
 
@@ -94,13 +93,9 @@ pub extern "C" fn kmain(
             mtvec::TrapMode::Direct,
             stvec_ret.trap_mode()
         );
-    }
 
-    unsafe {
         plic::init(hwinfo);
-    }
 
-    unsafe {
         sie::set_ssoft();
         sie::set_stimer();
         sie::set_sext();

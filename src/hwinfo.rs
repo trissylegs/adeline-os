@@ -13,7 +13,7 @@ use crate::isr::plic::InterruptId;
 use crate::sbi::base::BASE_EXTENSION;
 use crate::sbi::hart::HartId;
 use crate::sbi::reset::SystemResetExtension;
-use crate::{print, println, sbi};
+use crate::{print, println};
 
 static HW_INFO: Once<HwInfo> = Once::INIT;
 
@@ -158,7 +158,7 @@ impl Into<u32> for InterruptCause {
 }
 
 pub fn dump_dtb_hex(dtb: *const u8) {
-    sbi::init_io().ok();
+    // sbi::init_io().ok();
     let tree = unsafe { DevTree::from_raw_pointer(dtb).map_err(Error::msg).unwrap() };
     let bytes = tree.buf();
     for b in bytes {
@@ -178,7 +178,7 @@ pub fn dump_dtb_hex(dtb: *const u8) {
 }
 
 pub fn dump_dtb(dtb: *const u8) {
-    sbi::init_io().unwrap();
+    // sbi::init_io().unwrap();
 
     let tree = unsafe { DevTree::from_raw_pointer(dtb).map_err(Error::msg).unwrap() };
     let index_layout = DevTreeIndex::get_layout(&tree).map_err(Error::msg).unwrap();
@@ -215,14 +215,12 @@ pub fn setup_dtb(dtb: *const u8) -> &'static HwInfo {
         let dt: DevTree<'static> = match unsafe { DevTree::from_raw_pointer(dtb) } {
             Ok(dt) => dt,
             Err(err) => {
-                crate::sbi::init_io().unwrap();
                 panic!("Error parsing Device Tree: {}", err);
             }
         };
         let hwinfo = match walk_dtb(dt) {
             Ok(hwinfo) => hwinfo,
             Err(err) => {
-                crate::sbi::init_io().unwrap();
                 panic!("Error parsing Device Tree: {}", err);
             }
         };
