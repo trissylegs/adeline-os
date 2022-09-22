@@ -7,7 +7,7 @@ use core::panic::PanicInfo;
 #[panic_handler]
 #[no_mangle]
 pub fn panic(info: &PanicInfo) -> ! {
-    let mut io = unsafe { console::force_unlock() };
+    let mut io = unsafe { console::_panic_unlock() };
 
     writeln!(io, "{info}").ok();
     abort();
@@ -19,5 +19,9 @@ extern "C" fn abort() -> ! {
         srst.reset(ResetType::Shutdown, ResetReason::SystemFailure)
             .ok();
     }
+
+    #[allow(deprecated)]
+    crate::sbi::_legacy_shutdown().ok();
+
     loop {}
 }

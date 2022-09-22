@@ -20,7 +20,9 @@ mod pagetable;
 mod panic;
 mod sbi;
 mod task;
+mod time;
 mod traits;
+mod util;
 
 use core::{
     arch::asm,
@@ -37,14 +39,13 @@ use riscv::register::{
 };
 
 use crate::{
-    isr::plic::{self, MmioPlic},
+    isr::{plic, Sip},
     sbi::{
         base::BASE_EXTENSION,
-        hart::{Hsm, RentativeSuspendType},
+        hart::{HartId, Hsm, RentativeSuspendType},
         reset::{ResetType, SystemResetExtension},
         timer::Timer,
     },
-    task::{simple_executor::SimpleExecutor, Task},
 };
 
 extern "C" {
@@ -60,7 +61,7 @@ extern "C" {
 
 #[no_mangle]
 pub extern "C" fn kmain(
-    heart_id: u32,
+    hart_id: HartId,
     dtb: *const u8,
     start_of_memory: *const (),
     end_of_memory: *const (),
@@ -69,6 +70,14 @@ pub extern "C" fn kmain(
     // hwinfo::dump_dtb_hex(dtb);
 
     let hwinfo = hwinfo::setup_dtb(dtb);
+    time::init_time(hwinfo);
+
+    unsafe {
+        plic::init(hwinfo);
+        plic::set_threshold(plic::Threshold::Enable);
+        // If there's a pending interrupt on uart let's clear it first.
+        plic::process_interrupt(hart_id);
+    }
 
     console::init(hwinfo);
 
@@ -94,8 +103,6 @@ pub extern "C" fn kmain(
             stvec_ret.trap_mode()
         );
 
-        plic::init(hwinfo);
-
         sie::set_ssoft();
         sie::set_stimer();
         sie::set_sext();
@@ -112,15 +119,15 @@ pub extern "C" fn kmain(
     println!(" .utimer  = {:?}", sie_val.utimer());
     println!(" .uext    = {:?}", sie_val.uext());
 
-    println!("heart: {}", heart_id);
+    println!("heart: {}", hart_id);
     println!("start_of_memory: {:?}", start_of_memory);
     println!("end_of_memory: {:?}", end_of_memory);
     println!();
 
     pagetable::print_current_page_table();
 
-    let hsm = BASE_EXTENSION.get_extension::<Hsm>().unwrap().unwrap();
-
+    let _hsm = BASE_EXTENSION.get_extension::<Hsm>().unwrap().unwrap();
+    /*
     for hart in &hwinfo.harts {
         let status = hsm.hart_get_status(hart.hart_id);
         match status {
@@ -128,29 +135,30 @@ pub extern "C" fn kmain(
             Err(err) => println!("{:?} invalid: ({:?})", hart.hart_id, err),
         }
     }
+    */
 
     let timer = BASE_EXTENSION.get_extension::<Timer>().unwrap().unwrap();
-
     let time = riscv::register::time::read() as u64;
-
     timer.set_timer(time + 10000000).expect("set_timer");
 
-    /*
-       println!("Intentionally triggering trap");
-       unsafe {
-           (0x6969696969696969 as *const u8).read_volatile();
-       }
-    */
     #[cfg(test)]
     test_main();
 
+    /*
     let mut executor = SimpleExecutor::new();
     executor.spawn(Task::new(example_task()));
     executor.run();
+    */
 
+    shutdown();
+    #[allow(unused)]
     loop {
+        for b in console::pending_bytes() {
+            println!("Got byte: {:02x}", b);
+        }
+
         println!("Suspending!");
-        let suspend = hsm.hart_rentative_suspend(RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND);
+        let suspend = _hsm.hart_rentative_suspend(RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND);
         println!("Suspend result: {:?}", suspend);
     }
     // shutdown();
@@ -361,38 +369,49 @@ pub unsafe extern "C" fn trap_entry() {
 }
 
 #[no_mangle]
+#[allow(unused_must_use)]
 extern "C" fn trap(regs: &mut TrapRegisters) {
     let sepc = sepc::read();
     let sstatus = sstatus::read();
     let sie = sie::read();
+    let sip = Sip::read();
     let scause = scause::read();
     let stval = stval::read();
+
+    let mut w = console::lock();
+
+    writeln!(w, "sepc: {:?}", sepc);
+    writeln!(w, "sstatus: {:?}", sstatus);
+    writeln!(w, "sie: {:?}", sie);
+    writeln!(w, "sip: {:?}", sip);
+    writeln!(w, "scause: {:?}", scause.cause());
+    writeln!(w, "stval: {:?}", stval);
 
     match scause.cause() {
         Trap::Interrupt(int) => match int {
             scause::Interrupt::UserSoft => {
-                println!("USER SOFTWARE INTERRUPT: {:x}", stval);
+                writeln!(w, "USER SOFTWARE INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::SupervisorSoft => {
-                println!("SUPERVISOR SOFTWARE INTERRUPT: {:x}", stval);
+                writeln!(w, "SUPERVISOR SOFTWARE INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::UserTimer => {
-                println!("USER TIMER: {:x}", stval);
+                writeln!(w, "USER TIMER: {:x}", stval);
             }
             scause::Interrupt::SupervisorTimer => {
                 let time = riscv::register::time::read() as u64;
-                println!("TIMER: {:>10}", time);
+                writeln!(w, "TIMER: {:>10}", time);
                 let timer = BASE_EXTENSION.get_extension::<Timer>().unwrap().unwrap();
                 timer.set_timer(time + 10000000).expect("set_timer");
             }
             scause::Interrupt::UserExternal => {
-                println!("USER EXTERNAL INTERRUPT: {:x}", stval);
+                writeln!(w, "USER EXTERNAL INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::SupervisorExternal => {
-                println!("SUPERVISOR EXTERNAL INTERRUPT: {:x}", stval);
+                writeln!(w, "SUPERVISOR EXTERNAL INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::Unknown => {
-                println!("Unknown interupt: {:x}", stval)
+                writeln!(w, "Unknown interupt: {:x}", stval);
             }
         },
         Trap::Exception(ex) => {

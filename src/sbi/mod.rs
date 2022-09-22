@@ -1,17 +1,11 @@
 #[allow(dead_code)]
 mod call;
 
-use core::{
-    fmt::{self, Display, Formatter},
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::fmt::{self, Display, Formatter};
 
 use call::*;
-use conquer_once::spin::OnceCell;
 
-use spin::Mutex;
-
-use self::base::{SbiExtension, BASE_EXTENSION};
+use self::base::SbiExtension;
 
 pub mod base;
 pub mod hart;
@@ -228,3 +222,25 @@ impl From<isize> for SbiErrorCode {
 }
 
 pub type SbiResult<T> = Result<T, SbiError>;
+
+#[doc(hidden)]
+#[deprecated = "use crate::console instead"]
+pub(crate) fn _legacy_putchar(ch: u8) {
+    unsafe {
+        let _res = sbi_call1(
+            ch as usize,
+            ExtensionId::LEGACY_CONSOLE_PUTCHAR,
+            FunctionId(0),
+        );
+        // Can't really do much on failure because we're probably already panicing.
+    }
+}
+
+#[doc(hidden)]
+#[deprecated = "use crate::console instead"]
+pub(crate) fn _legacy_shutdown() -> SbiResult<!> {
+    unsafe {
+        sbi_call0(ExtensionId::LEGACY_SYSTEM_SHUTDOWN, FunctionId(0))
+            .map(|i| panic!("legacy sbi_shutdown returned without error: {}", i))
+    }
+}

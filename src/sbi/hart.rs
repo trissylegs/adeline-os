@@ -1,3 +1,5 @@
+use core::fmt::Display;
+
 use super::{
     base::SbiExtension,
     call::{sbi_call0, sbi_call1, sbi_call3},
@@ -25,6 +27,7 @@ impl SbiExtension for Hsm {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct HartId(pub usize);
 
 impl From<u32> for HartId {
@@ -41,6 +44,12 @@ impl From<usize> for HartId {
 impl From<u64> for HartId {
     fn from(n: u64) -> Self {
         HartId(n as usize)
+    }
+}
+
+impl Display for HartId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Hart #{}", self.0)
     }
 }
 

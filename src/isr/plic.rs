@@ -7,7 +7,7 @@ use core::{
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
-use crate::{hwinfo::HwInfo, println, sbi::hart::HartId};
+use crate::{hwinfo::HwInfo, isr::Sip, println, sbi::hart::HartId};
 
 const PLIC_SIZE: usize = 0x10000 / 4;
 
@@ -38,12 +38,13 @@ pub struct Context {
     hart_id: HartId,
     hart_base: AtomicPtr<u32>,
     enable_base: AtomicPtr<u32>,
+    enable_mutex: Mutex<()>,
 }
 
-pub static PLIC: Once<Mutex<MmioPlic>> = Once::INIT;
+pub static PLIC: Once<MmioPlic> = Once::INIT;
 
 pub unsafe fn init(hwinfo: &HwInfo) {
-    PLIC.call_once(|| Mutex::new(MmioPlic::init(hwinfo)));
+    PLIC.call_once(|| (MmioPlic::init(hwinfo)));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,6 +54,10 @@ pub struct InterruptId(pub NonZeroU32);
 impl InterruptId {
     pub fn get(self) -> u32 {
         self.0.get()
+    }
+
+    fn new(i: u32) -> Option<Self> {
+        NonZeroU32::new(i).map(InterruptId)
     }
 }
 
@@ -64,7 +69,10 @@ impl From<u32> for InterruptId {
 
 impl MmioPlic {
     unsafe fn init(info: &HwInfo) -> Self {
-        let mut base = info.plic.reg.base as *mut u8;
+        // Clear pending interrutps.
+        Sip::write(Sip::empty());
+
+        let base = info.plic.reg.base as *mut u8;
         let number_of_sources = info.plic.number_of_sources;
 
         let mut contexts = Vec::with_capacity(info.plic.contexts.len());
@@ -84,6 +92,7 @@ impl MmioPlic {
                 hart_id,
                 hart_base,
                 enable_base,
+                enable_mutex: Mutex::new(()),
             };
 
             for irq in 1..number_of_sources {
@@ -94,9 +103,10 @@ impl MmioPlic {
 
                 priority.write_volatile(1);
             }
+            contexts.push(ctx);
         }
 
-        let mut plic = Self {
+        let plic = Self {
             number_of_sources,
             addr: AtomicPtr::new(base),
             contexts,
@@ -105,6 +115,15 @@ impl MmioPlic {
         println!("{:#?}", plic);
 
         plic
+    }
+
+    fn context_for(&self, current_hart: HartId) -> &Context {
+        for ctx in &self.contexts {
+            if ctx.hart_id == current_hart {
+                return ctx;
+            }
+        }
+        panic!("Hart #{} has no context", current_hart.0);
     }
 }
 
@@ -124,4 +143,94 @@ impl Context {
             }
         }
     }
+
+    fn set_threshold(&self, arg: Threshold) {
+        unsafe {
+            let ptr = self
+                .hart_base
+                .load(Ordering::Relaxed)
+                .add(CONTEXT_THRESHOLD);
+            ptr.write(arg as u32);
+        }
+    }
+
+    fn toggle_interrupt(&self, interrupt: InterruptId, enable: bool) {
+        let i = interrupt.0.get();
+        self.enable_mutex.lock();
+        let enable_base = self.enable_base.load(Ordering::Relaxed);
+        unsafe {
+            let reg = enable_base.add((i as usize) / 32);
+            let mask = 1 << (i % 32);
+
+            if enable {
+                let old = reg.read_volatile();
+                let new = old | mask;
+                reg.write_volatile(new);
+            } else {
+                let old = reg.read_volatile();
+                let new = old & !mask;
+                reg.write_volatile(new);
+            }
+        }
+    }
+
+    fn claim(&self) -> Option<InterruptId> {
+        unsafe {
+            let claim_ptr = self.hart_base.load(Ordering::Relaxed).add(CONTEXT_CLAIM);
+            let res = claim_ptr.read_volatile();
+            InterruptId::new(res)
+        }
+    }
+
+    pub(crate) fn complete(&self, interrupt: InterruptId) {
+        unsafe {
+            let complete_ptr = self.hart_base.load(Ordering::Relaxed).add(CONTEXT_CLAIM);
+            complete_ptr.write_volatile(interrupt.get());
+        }
+    }
+}
+
+/* unsafe fn read_while_non_zero(ptr: *const u32) -> impl Iterator<Item = InterruptId> {
+    core::iter::repeat_with(|| ptr.read_volatile())
+        .map(|i| InterruptId::new(i))
+        .take_while(|i| i.is_some())
+        .map(Option::unwrap)
+} */
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Threshold {
+    Enable = 0,
+    // 1-6 are valid. But we're not using it at this time.
+    Disable = 7,
+}
+
+pub(crate) fn set_threshold(arg: Threshold) {
+    let plic = load_plic();
+
+    for ctx in &plic.contexts {
+        ctx.set_threshold(arg);
+    }
+}
+
+pub(crate) fn enable_interrupt(interrupt: InterruptId) {
+    let plic = load_plic();
+
+    for ctx in &plic.contexts {
+        ctx.toggle_interrupt(interrupt, true);
+    }
+}
+
+pub(crate) fn process_interrupt(current_hart: HartId) {
+    let plic = load_plic();
+    let context = plic.context_for(current_hart);
+
+    if let Some(interrupt) = context.claim() {
+        println!("Claimed interrupt {:?}", interrupt);
+        // TODO
+        context.complete(interrupt);
+    }
+}
+
+fn load_plic() -> &'static MmioPlic {
+    PLIC.get().expect("PLIC not initialized")
 }
