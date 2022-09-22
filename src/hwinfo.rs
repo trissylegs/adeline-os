@@ -13,6 +13,7 @@ use crate::isr::plic::InterruptId;
 use crate::sbi::base::BASE_EXTENSION;
 use crate::sbi::hart::HartId;
 use crate::sbi::reset::SystemResetExtension;
+use crate::util::DebugHide;
 use crate::{print, println};
 
 static HW_INFO: Once<HwInfo> = Once::INIT;
@@ -39,7 +40,9 @@ impl Debug for PhysicalAddressRange {
 #[derive(Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct HwInfo {
-    pub tree: DevTree<'static>,
+    pub tree: DebugHide<DevTree<'static>>,
+    pub timebase_freq: u64,
+
     /// Memory. Currently assuming a single block of RAM.
     pub ram: PhysicalAddressRange,
     // Memory reserved by SBI.
@@ -49,6 +52,7 @@ pub struct HwInfo {
     pub harts: Vec<Hart>,
     pub uart: UartNS16550a,
     pub plic: Plic,
+    pub clint: Clint,
 }
 
 impl Debug for HwInfo {
@@ -91,12 +95,19 @@ pub struct Plic {
     pub number_of_sources: u32,
     pub reg: PhysicalAddressRange,
     // Spefified by interrupts extended.
-    #[builder(setter(each(name = "add_context")))]
-    pub contexts: Vec<PlicContext>,
+    pub contexts: Vec<InterruptContext>,
+}
+
+#[derive(Debug, Clone, derive_builder::Builder)]
+#[builder(no_std)]
+pub struct Clint {
+    pub name: &'static str,
+    pub reg: PhysicalAddressRange,
+    pub contexts: Vec<InterruptContext>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PlicContext {
+pub struct InterruptContext {
     pub index: usize,
     pub interrupt_phandle: Phandle,
     // I can't figure out what this is.
@@ -238,7 +249,7 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
     let index = DevTreeIndex::new(tree, slice).map_err(Error::msg)?;
 
     let mut hwinfo = HwInfoBuilder::default();
-    hwinfo.tree(tree);
+    hwinfo.tree(DebugHide(tree));
 
     for node in index.compatible_nodes("riscv") {
         let mut hart = HartBuilder::default();
@@ -367,36 +378,43 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
                     }
                 }
                 Ok("interrupts-extended") => {
-                    let entries = prop.length() / size_of::<Phandle>() / 2;
-                    for index in 0..entries {
-                        let phandle = prop.phandle(2 * index as usize).unwrap();
-
-                        if let Ok(cause) =
-                            InterruptCause::try_from(prop.u32(2 * index + 1).unwrap())
-                        {
-                            if let Some(hart) = hwinfo
-                                .harts
-                                .as_ref()
-                                .unwrap()
-                                .iter()
-                                .find(|h| h.interrupt_handle == phandle)
-                            {
-                                plic.add_context(PlicContext {
-                                    index: index,
-                                    interrupt_phandle: phandle,
-                                    interrupt_cause: cause,
-                                    hart_id: hart.hart_id,
-                                });
-                            }
-                        }
-                    }
+                    plic.contexts(parse_interrupt_extended(prop, &hwinfo));
                 }
+
                 _ => {}
             }
         }
 
         if let Ok(plic) = plic.build() {
             hwinfo.plic(plic);
+        }
+    }
+
+    for node in index.compatible_nodes("riscv,clint0") {
+        let mut clint = ClintBuilder::default();
+        let name = node.name().expect("clint node does not have name");
+        clint.name(name);
+
+        for prop in node.props() {
+            match prop.name().expect("clint node failed get prop name") {
+                "reg" => {
+                    let base = prop
+                        .u64(0)
+                        .unwrap_or_else(|err| panic!("failed to read {name}/reg[0] as u64: {err}"))
+                        as usize;
+                    let len = prop
+                        .u64(1)
+                        .unwrap_or_else(|err| panic!("failed to read {name}/reg[1] as u64: {err}"))
+                        as usize;
+                    clint.reg(PhysicalAddressRange { base, len });
+                }
+
+                "interrupts-extended" => {
+                    clint.contexts(parse_interrupt_extended(prop, &hwinfo));
+                }
+
+                _ => {}
+            }
         }
     }
 
@@ -435,6 +453,13 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
                         })
                     }
                 }
+                Ok("timebase-frequency") => {
+                    match prop.length() {
+                        4 => hwinfo.timebase_freq(prop.u32(0).unwrap() as u64),
+                        8 => hwinfo.timebase_freq(prop.u64(0).unwrap()),
+                        _ => panic!("Unexpected timebase-frequency value: {:?}", prop.raw()),
+                    };
+                }
                 _ => {}
             }
         }
@@ -445,4 +470,38 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
     }
 
     hwinfo.build().map_err(Error::msg)
+}
+
+fn parse_interrupt_extended<'a>(
+    prop: fdt_rs::index::DevTreeIndexProp,
+    hwinfo: &'a HwInfoBuilder,
+) -> Vec<InterruptContext> {
+    let entries = prop.length() / size_of::<Phandle>() / 2;
+    let mut result = Vec::new();
+
+    for index in 0..entries {
+        let phandle_offset = 2 * index as usize;
+
+        let phandle = prop
+            .phandle(phandle_offset)
+            .expect("failed to read phandle");
+
+        if let Ok(cause) = InterruptCause::try_from(prop.u32(2 * phandle_offset + 1).unwrap()) {
+            if let Some(hart) = hwinfo
+                .harts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|h| h.interrupt_handle == phandle)
+            {
+                result.push(InterruptContext {
+                    index: phandle_offset,
+                    interrupt_phandle: phandle,
+                    interrupt_cause: cause,
+                    hart_id: hart.hart_id,
+                });
+            }
+        }
+    }
+    result
 }
