@@ -1,4 +1,4 @@
-use crate::println;
+use crate::prelude::*;
 use riscv::register::{self, satp::Mode};
 
 pub fn print_current_page_table() {

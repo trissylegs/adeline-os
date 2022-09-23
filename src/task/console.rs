@@ -1,7 +1,7 @@
 use crossbeam_queue::ArrayQueue;
 use spin::Once;
 
-use crate::println;
+use crate::prelude::*;
 
 static UART_QUEUE: Once<ArrayQueue<u8>> = Once::INIT;
 

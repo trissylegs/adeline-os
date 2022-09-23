@@ -7,7 +7,7 @@ use super::{
 };
 
 pub struct Hsm {
-    _n: (),
+    _probe_result: isize,
 }
 
 const HSM_HART_START: FunctionId = FunctionId(0x0);
@@ -21,8 +21,10 @@ impl SbiExtension for Hsm {
         super::ExtensionId(0x48534D)
     }
 
-    unsafe fn from_probe(_i: isize) -> Self {
-        Hsm { _n: () }
+    unsafe fn from_probe(probe_result: isize) -> Self {
+        Hsm {
+            _probe_result: probe_result,
+        }
     }
 }
 

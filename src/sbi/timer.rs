@@ -6,7 +6,7 @@ use super::{
 };
 
 pub struct Timer {
-    _n: (),
+    _probe_result: isize,
 }
 
 const TIMER_SET_TIMER: FunctionId = FunctionId(0);
@@ -17,8 +17,10 @@ impl SbiExtension for Timer {
         super::ExtensionId(0x54494D45)
     }
 
-    unsafe fn from_probe(_i: isize) -> Self {
-        Timer { _n: () }
+    unsafe fn from_probe(probe_result: isize) -> Self {
+        Timer {
+            _probe_result: probe_result,
+        }
     }
 }
 

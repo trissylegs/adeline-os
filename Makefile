@@ -9,10 +9,13 @@ export AR=$(CROSS_COMPILE)ar
 export LD=$(CROSS_COMPILE)ld
 export OBJCOPY=$(CROSS_COMPILE)13
 
-FW_JUMP=y
-FW_JUMP_ADDR=0x80200000
+RAM_BASE = 0x80000000
+JUMP_OFF =    0x80000
 
-MAKE_OPENSBI=$(MAKE) PLATFORM=$(PLATFORM) CROSS_COMPILE=$(CROSS_COMPILE)
+FW_JUMP=y
+FW_JUMP_ADDR=0x80080000
+
+MAKE_OPENSBI=$(MAKE) PLATFORM=$(PLATFORM) CROSS_COMPILE=$(CROSS_COMPILE) FW_JUMP=$(FW_JUMP) FW_JUMP_ADDR=$(FW_JUMP_ADDR)
 
 QEMU_MACHINE=virt
 QEMU_MEMORY=1G
@@ -30,7 +33,8 @@ opensbi:
 	cd ../opensbi && $(MAKE_OPENSBI)
 
 run:
-	qemu-system-riscv64 \
+	cargo build
+	cat /dev/zero | pv -q -L 3 | qemu-system-riscv64 \
 		-machine $(QEMU_MACHINE) \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_SMP) \
@@ -40,7 +44,8 @@ run:
 		-kernel target/riscv64gc-unknown-none-elf/debug/kernel
 
 run-gdb:
-	qemu-system-riscv64 \
+	cargo build
+	cat /dev/zero | pv -q -L 3 | qemu-system-riscv64 \
 		-machine $(QEMU_MACHINE) \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_SMP) \

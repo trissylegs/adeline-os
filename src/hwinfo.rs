@@ -9,12 +9,13 @@ use fdt_rs::spec::Phandle;
 use fdt_rs::{base::DevTree, index::DevTreeIndex};
 use spin::Once;
 
-use crate::isr::plic::InterruptId;
-use crate::sbi::base::BASE_EXTENSION;
-use crate::sbi::hart::HartId;
-use crate::sbi::reset::SystemResetExtension;
-use crate::util::DebugHide;
-use crate::{print, println};
+use crate::prelude::*;
+
+use crate::{
+    isr::plic::InterruptId,
+    sbi::{base::BASE_EXTENSION, hart::HartId, reset::SystemResetExtension},
+    util::DebugHide,
+};
 
 static HW_INFO: Once<HwInfo> = Once::INIT;
 
@@ -37,7 +38,7 @@ impl Debug for PhysicalAddressRange {
     }
 }
 
-#[derive(Clone, derive_builder::Builder)]
+#[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct HwInfo {
     pub tree: DebugHide<DevTree<'static>>,
@@ -53,19 +54,6 @@ pub struct HwInfo {
     pub uart: UartNS16550a,
     pub plic: Plic,
     pub clint: Clint,
-}
-
-impl Debug for HwInfo {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HwInfo")
-            .field("tree", &"<redacted for size>")
-            .field("ram", &self.ram)
-            .field("reserved_memory", &self.reserved_memory)
-            .field("harts", &self.harts)
-            .field("uart", &self.uart)
-            .field("plic", &self.plic)
-            .finish()
-    }
 }
 
 #[derive(Debug, Clone, derive_builder::Builder)]
@@ -390,7 +378,7 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
         }
     }
 
-    for node in index.compatible_nodes("riscv,clint0") {
+    for node in index.compatible_nodes("sifive,clint0") {
         let mut clint = ClintBuilder::default();
         let name = node.name().expect("clint node does not have name");
         clint.name(name);
@@ -416,6 +404,7 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
                 _ => {}
             }
         }
+        hwinfo.clint(clint.build().expect("failed to build clint"));
     }
 
     for node in index.nodes() {
@@ -481,12 +470,13 @@ fn parse_interrupt_extended<'a>(
 
     for index in 0..entries {
         let phandle_offset = 2 * index as usize;
+        let interrupt_cause_offset = phandle_offset + 1;
 
         let phandle = prop
             .phandle(phandle_offset)
             .expect("failed to read phandle");
 
-        if let Ok(cause) = InterruptCause::try_from(prop.u32(2 * phandle_offset + 1).unwrap()) {
+        if let Ok(cause) = InterruptCause::try_from(prop.u32(interrupt_cause_offset).unwrap()) {
             if let Some(hart) = hwinfo
                 .harts
                 .as_ref()

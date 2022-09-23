@@ -3,3 +3,5 @@ Cargo.lock
 *~
 *.o
 *.dtb
+int_log.txt
+log.txt

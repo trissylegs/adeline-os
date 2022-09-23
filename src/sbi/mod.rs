@@ -9,6 +9,7 @@ use self::base::SbiExtension;
 
 pub mod base;
 pub mod hart;
+pub mod ipi;
 pub mod reset;
 pub mod timer;
 

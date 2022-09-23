@@ -62,23 +62,25 @@ pub unsafe fn force_unlock() -> impl core::fmt::Write {
 }
 
 #[doc(hidden)]
-pub fn _print(args: core::fmt::Arguments) {
+pub fn _print(args: core::fmt::Arguments, file: &str, line: u32, column: u32) {
     if let Some(uart) = NS16550A.get() {
         let mut lock = uart.lock();
         core::fmt::Write::write_fmt(&mut *lock, args).ok();
+    } else {
+        panic!("Attemmpted to print before console was initalized. {file}:{line}:{column}\n{args}")
     }
 }
 
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {
-        $crate::console::_print(format_args!($($arg)*))
+        $crate::console::_print(format_args!($($arg)*), file!(), line!(), column!())
     };
 }
 
 #[macro_export]
 macro_rules! println {
-    () => { $crate::console::_print(format_args!("\n")) };
+    () => { $crate::console::_print(format_args!("\n"), file!(), line!(), column!()) };
     ($fmt:expr) => ($crate::print!(concat!($fmt, "\n")));
     ($fmt:expr, $($arg:tt)*) => ($crate::print!(concat!($fmt, "\n"), $($arg)*));
 }
@@ -97,23 +99,77 @@ pub(crate) fn lock() -> impl fmt::Write {
     LockHandle(lock)
 }
 
+enum LockOrDummy {
+    Dummy,
+    Normal(MutexGuard<'static, MmioSerialPort>),
+}
+
+impl fmt::Write for LockOrDummy {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self {
+            LockOrDummy::Dummy => Ok(()),
+            LockOrDummy::Normal(n) => n.write_str(s),
+        }
+    }
+
+    fn write_char(&mut self, c: char) -> core::fmt::Result {
+        match self {
+            LockOrDummy::Dummy => Ok(()),
+            LockOrDummy::Normal(n) => n.write_char(c),
+        }
+    }
+
+    fn write_fmt(mut self: &mut Self, args: core::fmt::Arguments<'_>) -> core::fmt::Result {
+        match self {
+            LockOrDummy::Dummy => Ok(()),
+            LockOrDummy::Normal(n) => n.write_fmt(args),
+        }
+    }
+}
+
+/// Get a writer if it's avalible. Otherwise get a dummy writer which does
+pub(crate) fn lock_or_dummy() -> impl fmt::Write {
+    match NS16550A.get().unwrap().try_lock() {
+        Some(l) => LockOrDummy::Normal(l),
+        None => LockOrDummy::Dummy,
+    }
+}
+
 #[derive(Debug)]
 enum PanicWriter {
     Fallback,
     Normal(MutexGuard<'static, MmioSerialPort>),
 }
 
+impl PanicWriter {
+    fn fallback_write(&self, s: &str) -> core::fmt::Result {
+        for b in s.bytes() {
+            #[allow(deprecated)]
+            crate::sbi::_legacy_putchar(b);
+        }
+        Ok(())
+    }
+}
+
 impl Write for PanicWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         match self {
             PanicWriter::Normal(w) => w.write_str(s),
-            PanicWriter::Fallback => {
-                for b in s.bytes() {
-                    #[allow(deprecated)]
-                    crate::sbi::_legacy_putchar(b);
-                }
-                Ok(())
-            }
+            PanicWriter::Fallback => self.fallback_write(s),
+        }
+    }
+
+    fn write_char(&mut self, c: char) -> core::fmt::Result {
+        match self {
+            PanicWriter::Normal(w) => w.write_char(c),
+            PanicWriter::Fallback => self.fallback_write(&c.encode_utf8(&mut [0; 4])),
+        }
+    }
+
+    fn write_fmt(mut self: &mut Self, args: core::fmt::Arguments<'_>) -> core::fmt::Result {
+        match self {
+            PanicWriter::Fallback => core::fmt::write(&mut self, args),
+            PanicWriter::Normal(w) => w.write_fmt(args),
         }
     }
 }

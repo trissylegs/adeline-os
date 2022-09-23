@@ -112,7 +112,7 @@ impl MmioPlic {
             contexts,
         };
 
-        println!("{:#?}", plic);
+        // println!("{:#?}", plic);
 
         plic
     }

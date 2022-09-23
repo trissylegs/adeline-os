@@ -1,7 +1,7 @@
 use super::{call::sbi_call2, ExtensionId, FunctionId, SbiExtension, SbiResult};
 
 pub struct SystemResetExtension {
-    _n: (),
+    _probe_result: isize,
 }
 
 impl SbiExtension for SystemResetExtension {
@@ -10,8 +10,10 @@ impl SbiExtension for SystemResetExtension {
         ExtensionId(0x53525354)
     }
 
-    unsafe fn from_probe(_i: isize) -> Self {
-        SystemResetExtension { _n: () }
+    unsafe fn from_probe(probe_result: isize) -> Self {
+        SystemResetExtension {
+            _probe_result: probe_result,
+        }
     }
 }
 

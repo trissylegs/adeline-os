@@ -1,8 +1,9 @@
 ENTRY(_start);
 
-/* Include entry point at start of binary */
-/* . = 0x80000000; */
-. = 0x80200000;
+/* RAM on opensbi starts at 0x80000000 */
+.  = 0x80000000;
+/* Open SBI reserves 2^19 bytes at start of ram */
+. +=    0x80000;
 SECTIONS {
     PROVIDE(_start_of_data = .);
     .text.init : ALIGN(4K) {
@@ -26,7 +27,6 @@ SECTIONS {
     }
     .rodata : ALIGN(4K) {
         *(.rodata);
-        PROVIDE(__uart_base_addr = 0x10000000);
     }
     .data : ALIGN(4K) {
         *(.data);

@@ -1,4 +1,5 @@
 #![feature(naked_functions)]
+#![feature(asm_sym)]
 #![feature(default_alloc_error_handler)]
 #![feature(custom_test_frameworks)]
 #![feature(never_type)]
@@ -10,8 +11,11 @@
 
 extern crate alloc;
 
-mod basic_allocator;
+use crate::prelude::*;
 
+mod prelude;
+
+mod basic_allocator;
 mod console;
 mod hwinfo;
 mod io;
@@ -21,12 +25,13 @@ mod panic;
 mod sbi;
 mod task;
 mod time;
-mod traits;
 mod util;
 
 use core::{
     arch::asm,
     fmt::{Debug, Write},
+    str,
+    time::Duration,
 };
 use fdt_rs::{
     base::DevTree,
@@ -37,6 +42,7 @@ use riscv::register::{
     scause::{self, Trap},
     sepc, sie, sstatus, stval, stvec,
 };
+use spin::Mutex;
 
 use crate::{
     isr::{plic, Sip},
@@ -46,6 +52,7 @@ use crate::{
         reset::{ResetType, SystemResetExtension},
         timer::Timer,
     },
+    time::Instant,
 };
 
 extern "C" {
@@ -55,22 +62,22 @@ extern "C" {
     pub static bss_end: usize;
     pub static stack_limit: usize;
     pub static stack_top: usize;
+    // Should be stored in register gp
     pub static __global_pointer: usize;
-    pub static __uart_base_addr: usize;
 }
 
 #[no_mangle]
-pub extern "C" fn kmain(
-    hart_id: HartId,
-    dtb: *const u8,
-    start_of_memory: *const (),
-    end_of_memory: *const (),
-) -> ! {
+pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
+    // unsafe {
+    //     // Clear BSS. Must be done before any static memory is accessed.
+    //     let start = bss_start as *mut u8;
+    //     start.write_bytes(0, bss_end - bss_start);
+    // }
+
     basic_allocator::init();
     // hwinfo::dump_dtb_hex(dtb);
 
     let hwinfo = hwinfo::setup_dtb(dtb);
-    time::init_time(hwinfo);
 
     unsafe {
         plic::init(hwinfo);
@@ -80,6 +87,10 @@ pub extern "C" fn kmain(
     }
 
     console::init(hwinfo);
+    time::init_time(hwinfo);
+
+    let now = Instant::now();
+    println!("now = {:?}", now);
 
     println!("{:#?}", hwinfo);
 
@@ -110,6 +121,11 @@ pub extern "C" fn kmain(
         sstatus::set_sie();
     }
 
+    unsafe { asm!("ecall",) }
+
+    println!("Sleep for 5 seconds");
+    time::sleep(Duration::from_secs(5));
+
     let sie_val = sie::read();
     println!("sie       = {:?}", sie_val);
     println!(" .ssoft   = {:?}", sie_val.ssoft());
@@ -120,8 +136,12 @@ pub extern "C" fn kmain(
     println!(" .uext    = {:?}", sie_val.uext());
 
     println!("heart: {}", hart_id);
-    println!("start_of_memory: {:?}", start_of_memory);
-    println!("end_of_memory: {:?}", end_of_memory);
+    unsafe {
+        println!("bss_start: {}", bss_start);
+        println!("bss_end: {}", bss_end);
+        println!("start_of_memory: {:?}", _start_of_data);
+        println!("end_of_memory: {:?}", _end_of_data);
+    }
     println!();
 
     pagetable::print_current_page_table();
@@ -284,7 +304,8 @@ pub unsafe extern "C" fn _start() -> ! {
         "mv   a1, s1",             // device_tree: *const u8
         "la   a2, _start_of_data", // start_of_data: *const ()
         "la   a3, _end_of_data",   // end_of_data: *const()
-        "tail kmain",
+        "tail {main}",
+        main = sym kmain,
         options(noreturn)
     )
 }
@@ -399,10 +420,7 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
                 writeln!(w, "USER TIMER: {:x}", stval);
             }
             scause::Interrupt::SupervisorTimer => {
-                let time = riscv::register::time::read() as u64;
-                writeln!(w, "TIMER: {:>10}", time);
-                let timer = BASE_EXTENSION.get_extension::<Timer>().unwrap().unwrap();
-                timer.set_timer(time + 10000000).expect("set_timer");
+                time::interrupt_handler(w, regs);
             }
             scause::Interrupt::UserExternal => {
                 writeln!(w, "USER EXTERNAL INTERRUPT: {:x}", stval);
@@ -600,4 +618,14 @@ macro_rules! wait_for {
             core::hint::spin_loop()
         }
     };
+}
+
+pub enum CriticalSectionError {
+    RenteredCriticalSection,
+}
+
+pub static CRITICAL_SECTION_LOCK: Mutex<CritLock> = Mutex::new(CritLock { _opaque: () });
+
+pub struct CritLock {
+    _opaque: (),
 }

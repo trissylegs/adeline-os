@@ -9,7 +9,7 @@ use super::{
 
 pub trait SbiExtension {
     fn id() -> ExtensionId;
-    unsafe fn from_probe(i: isize) -> Self;
+    unsafe fn from_probe(probe_result: isize) -> Self;
 }
 
 pub struct SbiBaseExtension {
