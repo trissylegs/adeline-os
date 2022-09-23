@@ -21,7 +21,7 @@ QEMU_MACHINE=virt
 QEMU_MEMORY=1G
 QEMU_SMP=1
 
-.phony: build clean run-gdb attach-gdb run
+.phony: build clean run run-gdb attach-gdb
 build:
 	cargo build --target=${TARGET}
 

@@ -99,7 +99,7 @@ pub(crate) fn lock() -> impl fmt::Write {
     LockHandle(lock)
 }
 
-enum LockOrDummy {
+pub enum LockOrDummy {
     Dummy,
     Normal(MutexGuard<'static, MmioSerialPort>),
 }

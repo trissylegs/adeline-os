@@ -1,11 +1,17 @@
-use core::mem::transmute;
+use core::{error::Error, fmt::Display, mem::transmute};
 
 use riscv::register::{marchid::Marchid, mimpid::Mimpid, mvendorid::Mvendorid};
 
 use super::{
     call::{sbi_call0, sbi_call1},
-    ExtensionId, FunctionId, SbiResult,
+    ExtensionId, FunctionId, SbiError, SbiResult,
 };
+
+static BASE_EXTENSION: SbiBaseExtension = SbiBaseExtension { _n: () };
+
+pub fn base_extension() -> &'static SbiBaseExtension {
+    &BASE_EXTENSION
+}
 
 pub trait SbiExtension {
     fn id() -> ExtensionId;
@@ -15,8 +21,6 @@ pub trait SbiExtension {
 pub struct SbiBaseExtension {
     _n: (),
 }
-
-pub const BASE_EXTENSION: SbiBaseExtension = SbiBaseExtension { _n: () };
 
 pub const BASE_GET_SPEC_VERSION: FunctionId = FunctionId(0x0);
 pub const BASE_GET_IMP_ID: FunctionId = FunctionId(0x1);
@@ -92,15 +96,16 @@ impl SbiBaseExtension {
         unsafe { sbi_call0(Self::id(), BASE_GET_IMP_VERSION) }
     }
 
-    pub fn get_extension<E>(&self) -> SbiResult<Option<E>>
+    pub fn get_extension<E>(&self) -> Result<E, GetExtensionError>
     where
         E: SbiExtension,
     {
-        let id = E::id().0 as usize;
-        let result = unsafe { sbi_call1(id, SbiBaseExtension::id(), BASE_PROBE_EXT)? };
+        let id = E::id();
+        let result = unsafe { sbi_call1(id.0 as usize, SbiBaseExtension::id(), BASE_PROBE_EXT) };
         match result {
-            0 => Ok(None),
-            n => unsafe { Ok(Some(E::from_probe(n))) },
+            Ok(0) => Err(GetExtensionError::MissingExtension(id)),
+            Ok(n) => unsafe { Ok(E::from_probe(n)) },
+            Err(err) => Err(GetExtensionError::SbiError(err)),
         }
     }
 
@@ -126,6 +131,30 @@ impl SbiBaseExtension {
             0 => Ok(None),
             // Mvendorid only has a private constructor.
             n => Ok(Some(unsafe { transmute::<_, Mimpid>(n) })),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GetExtensionError {
+    SbiError(SbiError),
+    MissingExtension(ExtensionId),
+}
+
+impl Display for GetExtensionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            GetExtensionError::SbiError(err) => err.fmt(f),
+            GetExtensionError::MissingExtension(ext) => writeln!(f, "missing extension {}", ext),
+        }
+    }
+}
+
+impl Error for GetExtensionError {
+    fn cause(&self) -> Option<&dyn Error> {
+        match self {
+            GetExtensionError::SbiError(ref err) => Some(err),
+            _ => None,
         }
     }
 }

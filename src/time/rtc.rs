@@ -1,13 +1,9 @@
-use core::time::Duration;
-
-use ::time::{OffsetDateTime, UtcOffset};
+use ::time::OffsetDateTime;
 use fdt_rs::spec::Phandle;
-use riscv::interrupt::Mutex;
+
 use spin::Once;
 
 use crate::{hwinfo::HwInfo, isr::plic::InterruptId};
-
-use super::SystemTime;
 
 const TIME_LOW: usize = 0x00;
 const TIME_HIGH: usize = 0x04;

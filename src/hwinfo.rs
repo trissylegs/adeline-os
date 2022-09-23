@@ -1,19 +1,21 @@
-use core::fmt::{Debug, Formatter};
-use core::mem::size_of;
-use core::str;
+use core::{
+    fmt::{Debug, Formatter},
+    mem::size_of,
+    str,
+};
 
 use alloc::vec::Vec;
 use anyhow::Error;
-use fdt_rs::prelude::*;
-use fdt_rs::spec::Phandle;
-use fdt_rs::{base::DevTree, index::DevTreeIndex};
+use fdt_rs::{base::DevTree, index::DevTreeIndex, prelude::*, spec::Phandle};
 use spin::Once;
-
-use crate::prelude::*;
 
 use crate::{
     isr::plic::InterruptId,
-    sbi::{base::BASE_EXTENSION, hart::HartId, reset::SystemResetExtension},
+    prelude::*,
+    sbi::{
+        hart::HartId,
+        reset::{shutdown, system_reset_extension},
+    },
     util::DebugHide,
 };
 
@@ -176,10 +178,7 @@ pub fn dump_dtb_hex(dtb: *const u8) {
     }
     println!();
 
-    BASE_EXTENSION
-        .get_extension::<SystemResetExtension>()
-        .unwrap()
-        .unwrap()
+    system_reset_extension()
         .reset(
             crate::sbi::reset::ResetType::Shutdown,
             crate::sbi::reset::ResetReason::NoReason,
@@ -209,15 +208,7 @@ pub fn dump_dtb(dtb: *const u8) {
         println!("}}");
     }
 
-    BASE_EXTENSION
-        .get_extension::<SystemResetExtension>()
-        .unwrap()
-        .unwrap()
-        .reset(
-            crate::sbi::reset::ResetType::Shutdown,
-            crate::sbi::reset::ResetReason::NoReason,
-        )
-        .unwrap();
+    shutdown();
 }
 
 pub fn setup_dtb(dtb: *const u8) -> &'static HwInfo {

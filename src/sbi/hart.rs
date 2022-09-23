@@ -1,10 +1,18 @@
 use core::fmt::Display;
 
+use spin::Once;
+
 use super::{
     base::SbiExtension,
     call::{sbi_call0, sbi_call1, sbi_call3},
     FunctionId, SbiResult,
 };
+
+pub static HSM_EXTENSION: Once<Hsm> = Once::INIT;
+
+pub fn hsm_extension() -> &'static Hsm {
+    HSM_EXTENSION.get().unwrap()
+}
 
 pub struct Hsm {
     _probe_result: isize,

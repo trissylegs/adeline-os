@@ -1,17 +1,38 @@
 #[allow(dead_code)]
 mod call;
 
-use core::fmt::{self, Display, Formatter};
+use core::{
+    error::Error,
+    fmt::{self, Display, Formatter},
+};
 
 use call::*;
 
-use self::base::SbiExtension;
+use self::{
+    base::{base_extension, SbiExtension},
+    hart::HSM_EXTENSION,
+    ipi::IPI_EXTENSION,
+    reset::SYSTEM_RESET_EXTENSION,
+    rfence::RFENCE_EXTENSION,
+    timer::TIMER_EXTENSION,
+};
 
 pub mod base;
 pub mod hart;
 pub mod ipi;
 pub mod reset;
+pub mod rfence;
 pub mod timer;
+
+pub(crate) fn init() {
+    let base = base_extension();
+
+    TIMER_EXTENSION.call_once(|| base.get_extension().unwrap());
+    IPI_EXTENSION.call_once(|| base.get_extension().unwrap());
+    RFENCE_EXTENSION.call_once(|| base.get_extension().unwrap());
+    HSM_EXTENSION.call_once(|| base.get_extension().unwrap());
+    SYSTEM_RESET_EXTENSION.call_once(|| base.get_extension().unwrap());
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -164,7 +185,7 @@ impl Into<Result<isize, SbiErrorCode>> for SbiRet {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct SbiError {
     pub code: SbiErrorCode,
     pub extension: ExtensionId,
@@ -188,6 +209,8 @@ impl Display for SbiError {
         Ok(())
     }
 }
+
+impl Error for SbiError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum SbiErrorCode {

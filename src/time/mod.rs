@@ -2,22 +2,15 @@ use core::{
     fmt::{self, Write},
     num::NonZeroU64,
     ops::{Add, AddAssign, Sub, SubAssign},
-    str,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
-
-pub use core::time::*;
-
 use riscv::register::{self, sstatus};
-use spin::Once;
 
 use crate::{
-    prelude::*,
-    sbi::{base::BASE_EXTENSION, hart::Hsm, timer::Timer},
+    sbi::{hart::hsm_extension, timer::TIMER_EXTENSION},
     TrapRegisters,
 };
-
-use self::rtc::Goldfish;
 
 pub mod rtc;
 
@@ -25,16 +18,8 @@ const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 static MTIME_PER_SECOND: AtomicU64 = AtomicU64::new(0);
 
-static TIMER_EXTENSION: Once<Timer> = Once::INIT;
-
 pub(crate) fn init_time(hwinfo: &crate::hwinfo::HwInfo) {
     MTIME_PER_SECOND.store(hwinfo.timebase_freq, Ordering::Relaxed);
-    TIMER_EXTENSION.call_once(|| {
-        BASE_EXTENSION
-            .get_extension::<Timer>()
-            .expect("error probing for sbi timer extension")
-            .expect("no sbi timer extension")
-    });
 
     // Fail early if something is wrong
     let _time = Instant::now();
@@ -192,14 +177,23 @@ impl Sub<Instant> for Instant {
     }
 }
 
+/// Set the interrtupt timer and suspend. Returning on the next interrupt.
+pub fn park_for(duration: Duration) {
+    let start = Instant::now();
+    let until = start + duration;
+
+    let hsm = hsm_extension();
+
+    set_timer(until).expect("failed to to set timer");
+    hsm.hart_rentative_suspend(crate::sbi::hart::RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND)
+        .expect("failed to suspend");
+}
+
 pub fn sleep(duration: Duration) {
     let start = Instant::now();
     let until = start + duration;
 
-    let hsm = BASE_EXTENSION
-        .get_extension::<Hsm>()
-        .expect("error probing for sbi hsm extension")
-        .expect("no sbi hsm extension");
+    let hsm = hsm_extension();
 
     loop {
         set_timer(until).expect("failed to to set timer");
@@ -209,7 +203,7 @@ pub fn sleep(duration: Duration) {
         .expect("failed to suspend");
 
         let now = Instant::now();
-        println!("until = {:?}, now = {:?}", until, now);
+        // println!("until = {:?}, now = {:?}", until, now);
         if until < now {
             return;
         }

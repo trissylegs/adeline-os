@@ -4,6 +4,7 @@
 #![feature(default_alloc_error_handler)]
 #![feature(custom_test_frameworks)]
 #![feature(never_type)]
+#![feature(error_in_core)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(dead_code)]
@@ -45,15 +46,11 @@ use riscv::register::{
 use spin::Mutex;
 
 use crate::{
+    console::LockOrDummy,
     isr::{plic, Sip},
     prelude::*,
-    sbi::{
-        base::BASE_EXTENSION,
-        hart::{HartId, Hsm, RentativeSuspendType},
-        reset::{ResetType, SystemResetExtension},
-        timer::Timer,
-    },
-    time::Instant,
+    sbi::hart::{hsm_extension, HartId},
+    time::{sleep, Instant},
 };
 
 extern "C" {
@@ -69,6 +66,7 @@ extern "C" {
 
 #[no_mangle]
 pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
+    sbi::init();
     basic_allocator::init();
     // hwinfo::dump_dtb_hex(dtb);
 
@@ -120,8 +118,9 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     let time = OffsetDateTime::now_utc();
     println!("time: {}", time);
 
-    println!("Sleep for 5 seconds");
-    time::sleep(Duration::from_secs(5));
+    let sleep_time = Duration::from_secs(1);
+    println!("Sleep for {:?}", sleep_time);
+    time::sleep(sleep_time);
 
     let sie_val = sie::read();
     println!("sie       = {:?}", sie_val);
@@ -143,8 +142,8 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
 
     pagetable::print_current_page_table();
 
-    let _hsm = BASE_EXTENSION.get_extension::<Hsm>().unwrap().unwrap();
-    /*
+    let hsm = hsm_extension();
+
     for hart in &hwinfo.harts {
         let status = hsm.hart_get_status(hart.hart_id);
         match status {
@@ -152,11 +151,6 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
             Err(err) => println!("{:?} invalid: ({:?})", hart.hart_id, err),
         }
     }
-    */
-
-    let timer = BASE_EXTENSION.get_extension::<Timer>().unwrap().unwrap();
-    let time = riscv::register::time::read() as u64;
-    timer.set_timer(time + 10000000).expect("set_timer");
 
     #[cfg(test)]
     test_main();
@@ -167,16 +161,18 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     executor.run();
     */
 
-    shutdown();
+    // shutdown();
     #[allow(unused)]
     loop {
         for b in console::pending_bytes() {
             println!("Got byte: {:02x}", b);
         }
 
-        println!("Suspending!");
-        let suspend = _hsm.hart_rentative_suspend(RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND);
-        println!("Suspend result: {:?}", suspend);
+        sleep(Duration::from_millis(200));
+
+        // println!("Suspending!");
+        // let suspend = hsm.hart_rentative_suspend(RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND);
+        // println!("Suspend result: {:?}", suspend);
     }
     // shutdown();
 }
@@ -188,17 +184,6 @@ async fn async_number() -> u32 {
 async fn example_task() {
     let number = async_number().await;
     println!("async number: {}", number);
-}
-
-fn shutdown() -> ! {
-    if let Ok(Some(reset)) = BASE_EXTENSION.get_extension::<SystemResetExtension>() {
-        if let Err(err) = reset.reset(ResetType::Shutdown, sbi::reset::ResetReason::NoReason) {
-            println!("System reset failed: {:?}", err);
-        }
-    }
-
-    println!("Shutdown not avalible");
-    loop {}
 }
 
 #[repr(C)]
@@ -416,7 +401,7 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
     let scause = scause::read();
     let stval = stval::read();
 
-    let mut w = console::lock();
+    let mut w = LockOrDummy::Dummy;
 
     writeln!(w, "sepc: {:?}", sepc);
     writeln!(w, "sstatus: {:?}", sstatus);
