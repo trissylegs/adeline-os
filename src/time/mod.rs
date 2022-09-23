@@ -1,7 +1,8 @@
 use core::{
-    fmt::Write,
+    fmt::{self, Write},
     num::NonZeroU64,
     ops::{Add, AddAssign, Sub, SubAssign},
+    str,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -15,6 +16,10 @@ use crate::{
     sbi::{base::BASE_EXTENSION, hart::Hsm, timer::Timer},
     TrapRegisters,
 };
+
+use self::rtc::Goldfish;
+
+pub mod rtc;
 
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
@@ -33,6 +38,13 @@ pub(crate) fn init_time(hwinfo: &crate::hwinfo::HwInfo) {
 
     // Fail early if something is wrong
     let _time = Instant::now();
+
+    LAST_SET_TIMER.store(0, Ordering::Relaxed);
+    TIMER_EXTENSION
+        .get()
+        .unwrap()
+        .set_timer(0)
+        .expect("failed to set timer")
 }
 
 fn get_mtime_per_second() -> u64 {
@@ -249,4 +261,78 @@ pub(crate) fn interrupt_handler(mut w: impl Write, _regs: &mut TrapRegisters) {
     }
 
     writeln!(w, "TIMER: {:?}", time).ok();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SystemTime(Duration);
+
+impl SystemTime {
+    pub const UNIX_EPOCH: SystemTime = SystemTime(Duration::new(0, 0));
+
+    pub fn now() -> SystemTime {
+        todo!()
+    }
+
+    pub fn duration_since(&self, earlier: SystemTime) -> Result<Duration, SystemTimeError> {
+        self.0
+            .checked_sub(earlier.0)
+            .ok_or_else(|| SystemTimeError(earlier.0.checked_sub(self.0).unwrap()))
+    }
+
+    pub fn elapsed(&self) -> Result<Duration, SystemTimeError> {
+        Self::now().duration_since(*self)
+    }
+
+    pub fn checked_add(&self, duration: Duration) -> Option<SystemTime> {
+        self.0.checked_add(duration).map(SystemTime)
+    }
+
+    pub fn checked_sub(&self, duration: Duration) -> Option<SystemTime> {
+        self.0.checked_sub(duration).map(SystemTime)
+    }
+}
+
+impl Add<Duration> for SystemTime {
+    type Output = SystemTime;
+    fn add(self, rhs: Duration) -> SystemTime {
+        self.checked_add(rhs)
+            .expect("overflow when adding system time and duration")
+    }
+}
+
+impl AddAssign<Duration> for SystemTime {
+    fn add_assign(&mut self, rhs: Duration) {
+        *self = *self + rhs
+    }
+}
+
+impl Sub<Duration> for SystemTime {
+    type Output = SystemTime;
+
+    fn sub(self, rhs: Duration) -> Self::Output {
+        self.checked_sub(rhs)
+            .expect("underflow when subtracting system time and duration")
+    }
+}
+
+impl SubAssign<Duration> for SystemTime {
+    fn sub_assign(&mut self, rhs: Duration) {
+        *self = *self - rhs
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SystemTimeError(Duration);
+
+impl SystemTimeError {
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        self.0
+    }
+}
+
+impl fmt::Display for SystemTimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "second time provided was later than self")
+    }
 }

@@ -56,7 +56,7 @@ impl InterruptId {
         self.0.get()
     }
 
-    fn new(i: u32) -> Option<Self> {
+    pub fn new(i: u32) -> Option<Self> {
         NonZeroU32::new(i).map(InterruptId)
     }
 }

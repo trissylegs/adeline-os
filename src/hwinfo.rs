@@ -54,6 +54,8 @@ pub struct HwInfo {
     pub uart: UartNS16550a,
     pub plic: Plic,
     pub clint: Clint,
+
+    pub rtc: Rtc,
 }
 
 #[derive(Debug, Clone, derive_builder::Builder)]
@@ -103,6 +105,15 @@ pub struct InterruptContext {
     // If it's '9' it is.
     pub interrupt_cause: InterruptCause,
     pub hart_id: HartId,
+}
+
+#[derive(Debug, Clone, derive_builder::Builder)]
+#[builder(no_std)]
+pub struct Rtc {
+    pub name: &'static str,
+    pub interrupt: InterruptId,
+    pub interrupt_parent: Phandle,
+    pub reg: PhysicalAddressRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -405,6 +416,39 @@ fn walk_dtb(tree: DevTree<'static>) -> anyhow::Result<HwInfo> {
             }
         }
         hwinfo.clint(clint.build().expect("failed to build clint"));
+    }
+
+    for node in index.compatible_nodes("google,goldfish-rtc") {
+        let mut rtc = RtcBuilder::default();
+
+        rtc.name(node.name().expect("rtc: node has no name"));
+
+        for prop in node.props() {
+            match prop.name().expect("rtc: prop has no name") {
+                "interrupts" => {
+                    let int = InterruptId::new(prop.u32(0).expect("interrupts has no data"))
+                        .expect("rtc: interrupt numbers cannot be zero");
+                    rtc.interrupt(int);
+                }
+                "interrupt-parent" => {
+                    let val = prop
+                        .phandle(0)
+                        .expect("rtc: interrupt-parent requires parent");
+
+                    rtc.interrupt_parent(val);
+                }
+                "reg" => {
+                    let reg_base = prop.u64(0).expect("rtc: error getting reg[0]");
+                    let reg_len = prop.u64(1).expect("rtc: error getting reg[1]");
+                    rtc.reg(PhysicalAddressRange {
+                        base: reg_base as usize,
+                        len: reg_len as usize,
+                    });
+                }
+                _ => {}
+            }
+        }
+        hwinfo.rtc(rtc.build().unwrap());
     }
 
     for node in index.nodes() {

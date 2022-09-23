@@ -1,5 +1,6 @@
 #![feature(naked_functions)]
 #![feature(asm_sym)]
+#![feature(asm_const)]
 #![feature(default_alloc_error_handler)]
 #![feature(custom_test_frameworks)]
 #![feature(never_type)]
@@ -25,6 +26,7 @@ mod task;
 mod time;
 mod util;
 
+use ::time::OffsetDateTime;
 use core::{
     arch::asm,
     fmt::{Debug, Write},
@@ -44,6 +46,7 @@ use spin::Mutex;
 
 use crate::{
     isr::{plic, Sip},
+    prelude::*,
     sbi::{
         base::BASE_EXTENSION,
         hart::{HartId, Hsm, RentativeSuspendType},
@@ -66,12 +69,6 @@ extern "C" {
 
 #[no_mangle]
 pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
-    // unsafe {
-    //     // Clear BSS. Must be done before any static memory is accessed.
-    //     let start = bss_start as *mut u8;
-    //     start.write_bytes(0, bss_end - bss_start);
-    // }
-
     basic_allocator::init();
     // hwinfo::dump_dtb_hex(dtb);
 
@@ -86,6 +83,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
 
     console::init(hwinfo);
     time::init_time(hwinfo);
+    time::rtc::init(hwinfo);
 
     let now = Instant::now();
     println!("now = {:?}", now);
@@ -119,7 +117,8 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
         sstatus::set_sie();
     }
 
-    unsafe { asm!("ecall",) }
+    let time = OffsetDateTime::now_utc();
+    println!("time: {}", time);
 
     println!("Sleep for 5 seconds");
     time::sleep(Duration::from_secs(5));
@@ -275,10 +274,31 @@ impl Debug for TrapRegisters {
     }
 }
 
+// Do a memset ensuring we don't use any stack memory.
+#[naked]
+pub unsafe extern "C" fn stackless_clear_memory(a: *mut u8, b: *mut u8) {
+    asm!(
+        // Rules:
+        // * cannot touch stack or global memory.
+        // * must not break s0...s11
+        "
+        bgeu a0,   a0, 3f
+    2:
+        sd   zero, 0(a0)
+        addi a0,   a0, {reg_size}
+        bltu a0,   a1, 2b
+    3:
+        ret
+        ",
+        reg_size = const core::mem::size_of::<usize>(),
+        options(noreturn)
+    );
+}
+
 #[naked]
 #[no_mangle]
 #[link_section = ".text.init"]
-pub unsafe extern "C" fn _start() -> ! {
+pub unsafe extern "C" fn _start(hart_id: usize, dev_tree: *const u8) -> ! {
     asm!(
         // Set global pointer.
         ".option push",
@@ -287,23 +307,22 @@ pub unsafe extern "C" fn _start() -> ! {
         ".option pop",
         // Setup stack
         "la   sp, stack_top",
-        "addi sp, sp, -32",
-        "sd   ra, 24(sp)",
-        // Save heart_id and device_tree address.
+
+        // Save heart_id and device_tree address. So we can call clear_memory
         "mv   s0, a0",
         "mv   s1, a1",
-        // memset(bss_start, 0, bss_end - bss_start)
+
+        // stackless_clear_memory(bss_start, bss_end)
         "la   a0, bss_start",
-        "li   a1, 0",
-        "la   a2, bss_end",
-        "sub  a2, a2, a0",
-        "call memset",
-        "mv   a0, s0",             // heart_id: i32
+        "la   a1, bss_end",
+        "call {clear_memory}",
+
+        // kmain(hart_id, device_tree)
+        "mv   a0, s0",             // heart_id: usize
         "mv   a1, s1",             // device_tree: *const u8
-        "la   a2, _start_of_data", // start_of_data: *const ()
-        "la   a3, _end_of_data",   // end_of_data: *const()
         "tail {main}",
         main = sym kmain,
+        clear_memory = sym stackless_clear_memory,
         options(noreturn)
     )
 }

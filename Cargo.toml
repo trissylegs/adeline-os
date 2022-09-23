@@ -46,3 +46,8 @@ default-features = false
 version = "0.3"
 default-features = false
 features = ["alloc"]
+
+[dependencies.time]
+version = "0.3"
+default-features = false
+features = ["alloc", "macros", "parsing"]
