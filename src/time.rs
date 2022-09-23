@@ -7,9 +7,8 @@ use core::{
 
 pub use core::time::*;
 
-use crossbeam_queue::ArrayQueue;
 use riscv::register::{self, sstatus};
-use spin::{Mutex, Once};
+use spin::Once;
 
 use crate::{
     prelude::*,
@@ -33,7 +32,7 @@ pub(crate) fn init_time(hwinfo: &crate::hwinfo::HwInfo) {
     });
 
     // Fail early if something is wrong
-    let time = Instant::now();
+    let _time = Instant::now();
 }
 
 fn get_mtime_per_second() -> u64 {

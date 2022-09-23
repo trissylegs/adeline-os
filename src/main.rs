@@ -11,8 +11,6 @@
 
 extern crate alloc;
 
-use crate::prelude::*;
-
 mod prelude;
 
 mod basic_allocator;

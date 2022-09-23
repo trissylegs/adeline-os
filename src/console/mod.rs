@@ -119,7 +119,7 @@ impl fmt::Write for LockOrDummy {
         }
     }
 
-    fn write_fmt(mut self: &mut Self, args: core::fmt::Arguments<'_>) -> core::fmt::Result {
+    fn write_fmt(self: &mut Self, args: core::fmt::Arguments<'_>) -> core::fmt::Result {
         match self {
             LockOrDummy::Dummy => Ok(()),
             LockOrDummy::Normal(n) => n.write_fmt(args),
