@@ -4,50 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = { version = "1", default-features = false }
 bitflags = "1.1.0"
 cfg-if = "1"
+derive_builder = { version = "0.11", default-features = false }
+fdt-rs = { version = "0.4", default-features = false }
+linked_list_allocator = { version = "0.10.3" }
 riscv = "0.8.0"
 smallvec = "1.8"
+spin = { version = "0.9", default-features = false, features = [ "lock_api","mutex","spin_mutex","once" ] }
+time = { version = "0.3", default-features = false, features = [ "alloc", "macros", "parsing" ] }
 volatile = "0.4.4"
-
-[dependencies.linked_list_allocator]
-version = "0.10.3"
-
-[dependencies.spin]
-version = "0.9"
-default-features = false
-features = ["lock_api", "mutex", "spin_mutex", "once"]
-
-[dependencies.fdt-rs]
-version = "0.4"
-default-features = false
-
-[dependencies.indenter]
-version = "0.3"
-default-features = false
-
-[dependencies.conquer-once]
-version = "0.3"
-default-features = false
-
-[dependencies.snafu]
-version = "0.7"
-default-features = false
-
-[dependencies.derive_builder]
-version = "0.11"
-default-features = false
-
-[dependencies.anyhow]
-version = "1"
-default-features = false
-
-[dependencies.crossbeam-queue]
-version = "0.3"
-default-features = false
-features = ["alloc"]
-
-[dependencies.time]
-version = "0.3"
-default-features = false
-features = ["alloc", "macros", "parsing"]

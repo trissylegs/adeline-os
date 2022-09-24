@@ -90,7 +90,7 @@ Notes:
 
 ### Linux
 
-FIXME: I broke linux config making macos building work :/
+FIXME: I broke linux config making macos work :/
 
 1. Linux host (Maybe FreeBSD works)
 2. qemu-system-riscv64 (A riscv64 emulator)
