@@ -5,3 +5,6 @@ Cargo.lock
 *.dtb
 int_log.txt
 log.txt
+
+# Editors
+.fleet
