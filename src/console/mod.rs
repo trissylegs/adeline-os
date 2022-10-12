@@ -174,6 +174,22 @@ impl Write for PanicWriter {
     }
 }
 
+pub struct SbiWriter;
+
+impl Write for SbiWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for b in s.bytes() {
+            #[allow(deprecated)]
+            crate::sbi::_legacy_putchar(b);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) unsafe fn sbi_console() -> impl fmt::Write {
+    SbiWriter
+}
+
 #[doc(hidden)]
 pub(crate) unsafe fn _panic_unlock() -> impl fmt::Write {
     match NS16550A.get() {
