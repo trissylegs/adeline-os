@@ -5,31 +5,63 @@ ENTRY(_start);
 /* Open SBI reserves 2^19 bytes at start of ram */
 . +=    0x80000;
 SECTIONS {
-    PROVIDE(_start_of_data = .);
     .text.init : ALIGN(4K) {
-        *(.text.init);         
-    }
-    .text.trap_entry : ALIGN(4K) {
-        *(.text.trap_entry)
-    }
-    .text : ALIGN(4K) {        
+        __image_start = .;
+        __text_start = .;
+        *(.text.init);
+        . = ALIGN(4096);
         *(.text);
-    }
-    .bss : ALIGN(4K) {
-        PROVIDE(bss_start = .);
-        *(.bss);
-        PROVIDE(stack_limit = .);
-        . += 16384;
-        PROVIDE(stack_top = .);
-        . += 4096;
-        PROVIDE(__global_pointer = .);
-        PROVIDE(bss_end = .);
-    }
+        . = ALIGN(4096);
+        __text_end = .;
+    } 
+
     .rodata : ALIGN(4K) {
+        __rodata_start = .;
         *(.rodata);
+        . = ALIGN(4096);
+        __rodata_end = .;
     }
+
     .data : ALIGN(4K) {
+        __data_start = .;
         *(.data);
+        . = ALIGN(4096);
+        __data_end = .;
     }
-    PROVIDE(_end_of_data = .);
+
+    .bss : ALIGN(4K) {
+        __bss_start = .;  
+        *(.bss);
+        *(.stack_guard);
+        __stack_limit = .;
+        . += 0x8000;
+        PROVIDE(__stack_top = .);
+        PROVIDE(__bss_end = .);
+
+        . += 0x1000;
+        PROVIDE(__global_pointer = .);
+    }
+
+    .tdata : AT(4K) {
+        __tata_start = .;
+        *(.tdata);
+        . = ALIGN(4096);
+        __tdata_end = .;
+        __tbss_start = .;
+        *(.tbss);
+        . = ALIGN(4096);
+        __tbss_end = .;
+    }
+
+    __image_end = .;
+
+    /DISCARD/ : {
+        *(.comment*)
+        *(.eh_frame*)
+        *(.gcc_except_table*)
+        *(.note*)
+        *(.rel.eh_frame*)
+    }
+
 }
+
