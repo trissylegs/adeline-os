@@ -30,6 +30,8 @@ QEMU_MEMORY=128M
 # Yes, it does run with multiple cores present. But it doesn't do much with it.
 QEMU_SMP=1
 
+
+
 .phony: build clean run run-gdb attach-gdb
 build:
 	cargo build
