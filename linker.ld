@@ -42,8 +42,8 @@ SECTIONS {
         PROVIDE(__global_pointer = .);
     }
 
-    .tdata : AT(4K) {
-        __tata_start = .;
+    .tdata : ALIGN(4K) {
+        __tdata_start = .;
         *(.tdata);
         . = ALIGN(4096);
         __tdata_end = .;

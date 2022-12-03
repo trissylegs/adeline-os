@@ -5,14 +5,14 @@ use spin::Once;
 
 use crate::{hwinfo::HwInfo, isr::plic::InterruptId};
 
-const TIME_LOW: usize = 0x00;
-const TIME_HIGH: usize = 0x04;
-const ALARM_LOW: usize = 0x08;
-const ALARM_HIGH: usize = 0x0c;
-const IRQ_ENABLED: usize = 0x10;
-const CLEAR_ALARM: usize = 0x14;
-const ALARM_STATUS: usize = 0x18;
-const CLEAR_INTERRUPT: usize = 0x1c;
+const TIME_LOW: u64 = 0x00;
+const TIME_HIGH: u64 = 0x04;
+const ALARM_LOW: u64 = 0x08;
+const ALARM_HIGH: u64 = 0x0c;
+const IRQ_ENABLED: u64 = 0x10;
+const CLEAR_ALARM: u64 = 0x14;
+const ALARM_STATUS: u64 = 0x18;
+const CLEAR_INTERRUPT: u64 = 0x1c;
 
 pub static RTC: Once<Goldfish> = Once::INIT;
 
@@ -21,7 +21,7 @@ pub fn init(hwinfo: &'static HwInfo) {
 }
 
 pub struct Goldfish {
-    base: usize,
+    base: u64,
     interrupt: InterruptId,
     interrupt_parent: Phandle,
 }
@@ -29,7 +29,7 @@ pub struct Goldfish {
 impl Goldfish {
     pub fn init(hwinfo: &HwInfo) -> &'static Goldfish {
         RTC.call_once(|| Goldfish {
-            base: hwinfo.rtc.reg.base,
+            base: hwinfo.rtc.reg.start,
             interrupt: hwinfo.rtc.interrupt,
             interrupt_parent: hwinfo.rtc.interrupt_parent,
         })

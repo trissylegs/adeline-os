@@ -7,7 +7,6 @@
 #![feature(error_in_core)]
 #![feature(fn_align)]
 #![feature(type_alias_impl_trait)]
-#![feature(generic_const_exprs)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(dead_code)]
@@ -29,14 +28,17 @@ mod sbi;
 mod task;
 mod time;
 mod util;
+mod basic_consts;
+mod linker_info;
 
+use const_default::ConstDefault;
+use pagetable::{PageTable};
 use ::time::OffsetDateTime;
 use core::{
     arch::asm,
     cell::UnsafeCell,
     ffi::c_void,
-    fmt::{Debug, Write},
-    str,
+    fmt::{Debug, Write},    
     sync::atomic::AtomicBool,
     time::Duration,
 };
@@ -44,7 +46,7 @@ use core::{
 use riscv::register::{
     mtvec,
     scause::{self, Trap},
-    sepc, sie, sstatus, stval, stvec,
+    sepc, sie, sstatus, stval, stvec, satp,
 };
 use spin::Mutex;
 
@@ -58,61 +60,8 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
+    linker_info::{__bss_start, __bss_end, __stack_top, __global_pointer}, pagetable::dumb_map,
 };
-
-extern "C" {
-    static mut __image_start: c_void;
-    static mut __image_end: c_void;
-    static mut __text_start: c_void;
-    static mut __text_end: c_void;
-    static mut __rodata_start: c_void;
-    static mut __rodata_end: c_void;
-    static mut __data_start: c_void;
-    static mut __data_end: c_void;
-    static mut __bss_start: c_void;
-    static mut __bss_end: c_void;
-    static mut __stack_limit: c_void;
-    static mut __stack_top: c_void;
-    static mut __tata_start: c_void;
-    static mut __tdata_end: c_void;
-    static mut __tbss_start: c_void;
-    static mut __tbss_end: c_void;
-
-    static mut __global_pointer: c_void;
-}
-
-macro_rules! write_address {
-    ($w:ident, $var:ident) => {
-        writeln!(
-            $w,
-            "{:30}:   {:>16?}",
-            stringify!($var),
-            &$var as *const c_void
-        )
-        .ok();
-    };
-}
-
-unsafe fn print_address() {
-    let mut w = console::lock();
-    write_address!(w, __image_start);
-
-    write_address!(w, __image_end);
-    write_address!(w, __text_start);
-    write_address!(w, __text_end);
-    write_address!(w, __rodata_start);
-    write_address!(w, __rodata_end);
-    write_address!(w, __data_start);
-    write_address!(w, __data_end);
-    write_address!(w, __bss_start);
-    write_address!(w, __bss_end);
-    write_address!(w, __stack_limit);
-    write_address!(w, __stack_top);
-    write_address!(w, __tata_start);
-    write_address!(w, __tdata_end);
-    write_address!(w, __tbss_start);
-    write_address!(w, __tbss_end);
-}
 
 #[repr(align(4096))]
 pub struct StackGuardPage {
@@ -144,6 +93,8 @@ pub static STACK_GUARD: StackGuardPage = StackGuardPage {
 
 static BOOTLOOP_DETECT: AtomicBool = AtomicBool::new(false);
 
+static WIP_PAGETABLE: Mutex<PageTable> = Mutex::new(PageTable::DEFAULT);
+
 #[no_mangle]
 pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     unsafe {
@@ -157,7 +108,6 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
 
     sbi::init();
     basic_allocator::init();
-    // hwinfo::dump_dtb_hex(dtb);
 
     let hwinfo = hwinfo::setup_dtb(dtb);
     STACK_GUARD.check();
@@ -173,9 +123,8 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     time::init_time(hwinfo);
     time::rtc::init(hwinfo);
 
-    unsafe {
-        print_address();
-    }
+    linker_info::print_address_ranges();
+    println!(" fdt: {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
 
     for mmio in hwinfo.get_mmio_regions() {
         println!("mmio: {:08x} - {:08x}", mmio.start, mmio.end);
@@ -238,6 +187,23 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
 
     pagetable::print_current_page_table();
 
+    {
+        let mut pt = WIP_PAGETABLE.lock();
+        *pt = dumb_map();
+        println!("{:?}", *pt);
+        
+        let root_addr = (&*pt) as *const PageTable as u64;
+        // Update page table
+        let pa = pagetable::PhysicalAddress(root_addr);
+        let ppn = pa.ppn();
+        
+        unsafe {         
+            satp::set(satp::Mode::Sv48, 1, ppn as usize);
+        }
+    };
+
+    pagetable::print_current_page_table();
+
     let hsm = hsm_extension();
 
     for hart in &hwinfo.harts {
@@ -250,12 +216,6 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
 
     #[cfg(test)]
     test_main();
-
-    /*
-    let mut executor = SimpleExecutor::new();
-    executor.spawn(Task::new(example_task()));
-    executor.run();
-    */
 
     // shutdown();
     #[allow(unused)]
@@ -363,11 +323,12 @@ impl Debug for TrapRegisters {
 
 // Do a memset ensuring we don't use any stack memory.
 #[naked]
+#[cfg(target_pointer_width = "64")]
 pub unsafe extern "C" fn stackless_clear_memory(a: *mut u8, b: *mut u8) {
     asm!(
         // Rules:
         // * cannot touch stack or global memory.
-        // * must not break s0...s11
+        // * must preserve s0...s11
         "
         bgeu a0,   a1, 3f
     2:
@@ -402,28 +363,28 @@ pub unsafe extern "C" fn _start(hart_id: usize, dev_tree: *const u8) -> ! {
         // stackless_clear_memory(bss_start, bss_end)
         "la   a0, {bss_start}",
         "la   a1, {bss_end}",
-        "call {clear_memory}",
+        "call {stackless_clear_memory}",
 
         // kmain(hart_id, device_tree)
         "mv   a0, s0",             // heart_id: usize
         "mv   a1, s1",             // device_tree: *const u8
-        "tail {main}",
+        "tail {kmain}",
         global_pointer = sym __global_pointer,
         stack_top = sym __stack_top,
         bss_start = sym __bss_start,
         bss_end = sym __bss_end,
 
-        clear_memory = sym stackless_clear_memory,
-        main = sym kmain,
+        stackless_clear_memory = sym stackless_clear_memory,
+        kmain = sym kmain,
         options(noreturn)
     )
 }
 
-// #[allow(unsupported_naked_functions)]
 #[naked]
 #[no_mangle]
-// Interrupt handle my be aligned to 2k boundry. So we put it in a specific section and make sure the linker script puts this first.
+// Interrupt CSR uses lowest bits for flags so handler must be aligned to 2048 bytes.
 #[repr(align(4096))]
+#[cfg(target_pointer_width = "64")]
 pub unsafe extern "C" fn trap_entry() {
     asm!(
         "addi  sp, sp, -31 * 8", /* Allocate stack space */
@@ -588,7 +549,7 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     for test in tests {
         test.run();
     }
-    // qemu::exit_qemu(qemu::ExitCode::Success);
+    shutdown();
 }
 
 #[test_case]

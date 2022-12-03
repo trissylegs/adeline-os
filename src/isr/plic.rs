@@ -72,7 +72,7 @@ impl MmioPlic {
         // Clear pending interrutps.
         Sip::write(Sip::empty());
 
-        let base = info.plic.reg.base as *mut u8;
+        let base = info.plic.reg.start as *mut u8;
         let number_of_sources = info.plic.number_of_sources;
 
         let mut contexts = Vec::with_capacity(info.plic.contexts.len());

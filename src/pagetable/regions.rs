@@ -1,9 +1,9 @@
 use alloc::collections::BTreeMap;
 use core::cmp::Ordering;
 use core::fmt::Debug;
-use core::ops::Range;
 
-use crate::hwinfo::{IommuRegions, MemoryRegions, ReservedRegions};
+use crate::prelude::*;
+use crate::hwinfo::{IommuRegions, MemoryRegions, ReservedRegions, PhysicalAddressRange};
 
 #[derive(Debug)]
 pub enum RegionKind {
@@ -23,16 +23,19 @@ pub enum RegionKind {
     Readonly,
     /// Memory contains writable kernel memory or unused free memory.
     Writable,
+    /// Executable Writable memory. Here be danger.
+    ExecutableWritable,
 }
 
 pub struct MemoryLayout {
     pub(crate) regions: BTreeMap<MemoryRange, RegionKind>,
 }
 
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct MemoryRange {
-    pub start: usize,
-    pub end: usize,
+    pub start: u64,
+    pub end: u64,
 }
 
 impl MemoryRange {
@@ -41,6 +44,7 @@ impl MemoryRange {
         &self,
         other: &MemoryRange,
     ) -> (Option<MemoryRange>, Option<MemoryRange>) {
+        assert!(self.start < self.end);
         if self.end < other.start {
             // | self   |
             //             | other |
@@ -90,9 +94,16 @@ impl MemoryRange {
     }
 }
 
+impl MemoryRange {
+    pub const fn new(start: u64, end: u64) -> Self {
+        assert!(start < end);
+        MemoryRange { start, end }
+    }
+}
+
 impl Debug for MemoryRange {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:x}..{:x}", self.start, self.end)
+        write!(f, "{:08x}..{:08x}", self.start, self.end)
     }
 }
 
@@ -102,8 +113,9 @@ impl PartialOrd for MemoryRange {
     }
 }
 
-impl From<Range<usize>> for MemoryRange {
-    fn from(r: Range<usize>) -> Self {
+impl From<PhysicalAddressRange> for MemoryRange {
+    fn from(r: PhysicalAddressRange) -> Self {
+        assert!(r.start <= r.end);
         MemoryRange {
             start: r.start,
             end: r.end,
@@ -142,9 +154,8 @@ impl MemoryLayout {
             regions.insert(res.into(), RegionKind::Reserved);
         }
 
-        for mem in hwinfo.get_memory_regions() {
-            let mut _mem = MemoryRange::from(mem);
-            // Todo
+        for mem in hwinfo.get_memory_regions() {            
+            todo!();
         }
 
         MemoryLayout { regions }

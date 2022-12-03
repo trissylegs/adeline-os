@@ -12,7 +12,9 @@ static NS16550A: Once<Mutex<MmioSerialPort>> = Once::INIT;
 pub fn init(info: &HwInfo) {
     NS16550A.call_once(|| {
         let uart = &info.uart;
-        let mut sp = unsafe { MmioSerialPort::new(uart.reg.base, uart.interrupt) };
+        let mut sp = unsafe { 
+            MmioSerialPort::new(uart.reg.start as usize, uart.interrupt) 
+        };
         sp.init().expect("failed to inialize serial port");
         writeln!(sp, "Serial Port initialized!").ok();
 

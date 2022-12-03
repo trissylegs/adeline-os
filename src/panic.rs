@@ -1,6 +1,5 @@
-use crate::console::{self, sbi_console};
-use crate::sbi::reset::{ResetReason, ResetType, SYSTEM_RESET_EXTENSION};
-use core::arch::asm;
+use crate::console::sbi_console;
+
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
@@ -13,13 +12,18 @@ pub fn panic(info: &PanicInfo) -> ! {
     abort();
 }
 
+#[cfg(not(features = "ndebug"))]
 #[no_mangle]
 extern "C" fn abort() -> ! {
-    #[cfg(not(features = "ndebug"))]
     loop {
         core::hint::spin_loop();
     }
+}
 
+#[cfg(features = "ndebug")]
+#[no_mangle]
+extern "C" fn abort() -> ! {
+    use crate::sbi::reset::{ResetReason, ResetType, SYSTEM_RESET_EXTENSION};
     if let Some(srst) = SYSTEM_RESET_EXTENSION.get() {
         srst.reset(ResetType::Shutdown, ResetReason::SystemFailure)
             .ok();
