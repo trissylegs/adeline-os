@@ -159,26 +159,26 @@ impl Iterator for HartMarkIter {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RentativeSuspendType(pub u32);
+pub struct RetentiveSuspendType(pub u32);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NonRentativeSuspendType(pub u32);
+pub struct NonRetentiveSuspendType(pub u32);
 
-impl RentativeSuspendType {
-    pub const DEFAULT_RETENTIVE_SUSPEND: RentativeSuspendType = RentativeSuspendType(0x00000000);
+impl RetentiveSuspendType {
+    pub const DEFAULT_RETENTIVE_SUSPEND: RetentiveSuspendType = RetentiveSuspendType(0x00000000);
 }
-impl Default for RentativeSuspendType {
+impl Default for RetentiveSuspendType {
     fn default() -> Self {
         Self::DEFAULT_RETENTIVE_SUSPEND
     }
 }
 
-impl NonRentativeSuspendType {
-    pub const DEFAULT_NON_RETENTIVE_SUSPEND: NonRentativeSuspendType =
-        NonRentativeSuspendType(0x80000000);
+impl NonRetentiveSuspendType {
+    pub const DEFAULT_NON_RETENTIVE_SUSPEND: NonRetentiveSuspendType =
+        NonRetentiveSuspendType(0x80000000);
 }
 
-impl Default for NonRentativeSuspendType {
+impl Default for NonRetentiveSuspendType {
     fn default() -> Self {
         Self::DEFAULT_NON_RETENTIVE_SUSPEND
     }
@@ -225,13 +225,13 @@ impl Hsm {
         })
     }
 
-    pub fn hart_rentative_suspend(&self, suspend_type: RentativeSuspendType) -> SbiResult<()> {
+    pub fn hart_retentive_suspend(&self, suspend_type: RetentiveSuspendType) -> SbiResult<()> {
         unsafe { self.hart_suspend(suspend_type.0, 0, 0) }
     }
 
-    unsafe fn hart_non_rentative_suspend(
+    unsafe fn hart_non_retentive_suspend(
         &self,
-        suspend_type: NonRentativeSuspendType,
+        suspend_type: NonRetentiveSuspendType,
         resume_addr: usize,
         opaque: usize,
     ) -> SbiResult<()> {

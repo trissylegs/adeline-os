@@ -15,7 +15,7 @@ pub fn init(info: &HwInfo) {
         let mut sp = unsafe { 
             MmioSerialPort::new(uart.reg.start as usize, uart.interrupt) 
         };
-        sp.init().expect("failed to inialize serial port");
+        sp.init().expect("failed to initialize serial port");
         writeln!(sp, "Serial Port initialized!").ok();
 
         Mutex::new(sp)
@@ -69,7 +69,7 @@ pub fn _print(args: core::fmt::Arguments, file: &str, line: u32, column: u32) {
         let mut lock = uart.lock();
         core::fmt::Write::write_fmt(&mut *lock, args).ok();
     } else {
-        panic!("Attemmpted to print before console was initalized. {file}:{line}:{column}\n{args}")
+        panic!("Attempted to print before console was initialized. {file}:{line}:{column}\n{args}")
     }
 }
 
@@ -129,7 +129,7 @@ impl fmt::Write for LockOrDummy {
     }
 }
 
-/// Get a writer if it's avalible. Otherwise get a dummy writer which does
+/// Get a writer if it's available. Otherwise get a dummy writer which does
 pub(crate) fn lock_or_dummy() -> impl fmt::Write {
     match NS16550A.get().unwrap().try_lock() {
         Some(l) => LockOrDummy::Normal(l),

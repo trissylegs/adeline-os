@@ -11,9 +11,9 @@ pub enum RegionKind {
     /// Should remain unmapped
     None,
     /// Memory region is reserved by SBI.
-    /// Should reamin unmapped
+    /// Should remain unmapped
     Reserved,
-    /// Memory mapped IO region. Used for communiating with hardware.
+    /// Memory mapped IO region. Used for communicating with hardware.
     /// Should be mapped as read-writable with no caching.
     Mmio,
     /// Memory contains executable kernel could.

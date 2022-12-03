@@ -69,7 +69,7 @@ impl From<u32> for InterruptId {
 
 impl MmioPlic {
     unsafe fn init(info: &HwInfo) -> Self {
-        // Clear pending interrutps.
+        // Clear pending interrupts.
         Sip::write(Sip::empty());
 
         let base = info.plic.reg.start as *mut u8;

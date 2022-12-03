@@ -52,7 +52,7 @@ use spin::Mutex;
 
 use crate::{
     console::LockOrDummy,
-    hwinfo::{IommuRegions, MemoryRegions, ReservedRegions},
+    hwinfo::{MmioRegions, MemoryRegions, ReservedRegions},
     isr::{plic, Sip},
     prelude::*,
     sbi::{
@@ -124,18 +124,18 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     time::rtc::init(hwinfo);
 
     linker_info::print_address_ranges();
-    println!(" fdt: {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
+    println!(" fdt:         {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
 
     for mmio in hwinfo.get_mmio_regions() {
-        println!("mmio: {:08x} - {:08x}", mmio.start, mmio.end);
+        println!("mmio:     {:08x} - {:08x}", mmio.start, mmio.end);
     }
 
     for reserved in hwinfo.get_reserved_regions() {
-        println!("resv: {:08x} - {:08x}", reserved.start, reserved.end);
+        println!("reserved: {:08x} - {:08x}", reserved.start, reserved.end);
     }
 
     for mem in hwinfo.get_memory_regions() {
-        println!("mem:  {:08x} - {:08x}", mem.start, mem.end);
+        println!("memory:   {:08x} - {:08x}", mem.start, mem.end);
     }
 
     let now = Instant::now();
@@ -146,22 +146,26 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     let stvec_addr = trap_entry as *const u8;
     assert_eq!((stvec_addr as usize) & 0b11, 0);
 
-    unsafe {
+    let stvec_ret = unsafe {
         stvec::write(stvec_addr as usize, mtvec::TrapMode::Direct);
-        let stvec_ret = stvec::read();
         // stvec uses WARL. (Write any values, read legal values)
+        stvec::read()
+    };
+        
 
-        println!(
-            "stvec address: Wrote: {:?}. Read: {:?}",
-            stvec_addr,
-            stvec_ret.address() as *const u8
-        );
+    println!(
+        "stvec address: Wrote: {:?}. Read: {:?}",
+        stvec_addr,
+        stvec_ret.address() as *const u8
+    );
 
-        println!(
-            "stvec wrote:   Wrote: {:?}. Read: {:?}",
-            mtvec::TrapMode::Direct,
-            stvec_ret.trap_mode()
-        );
+    println!(
+        "stvec wrote:   Wrote: {:?}. Read: {:?}",
+        mtvec::TrapMode::Direct,
+        stvec_ret.trap_mode()
+    );
+
+    unsafe {
 
         sie::set_ssoft();
         sie::set_stimer();
@@ -233,7 +237,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
         }
 
         // println!("Suspending!");
-        // let suspend = hsm.hart_rentative_suspend(RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND);
+        // let suspend = hsm.hart_retentive_suspend(RetentiveSuspendType::DEFAULT_RETENTIVE_SUSPEND);
         // println!("Suspend result: {:?}", suspend);
     }
     shutdown();
@@ -461,7 +465,7 @@ pub unsafe extern "C" fn trap_entry() {
 
 #[no_mangle]
 #[allow(unused_must_use)]
-extern "C" fn trap(regs: &mut TrapRegisters) {
+extern "C" fn trap(registers: &mut TrapRegisters) {
     let sepc = sepc::read();
     let sstatus = sstatus::read();
     let sie = sie::read();
@@ -490,7 +494,7 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
                 writeln!(w, "USER TIMER: {:x}", stval);
             }
             scause::Interrupt::SupervisorTimer => {
-                time::interrupt_handler(w, regs);
+                time::interrupt_handler(w, registers);
             }
             scause::Interrupt::UserExternal => {
                 writeln!(w, "USER EXTERNAL INTERRUPT: {:x}", stval);
@@ -499,12 +503,12 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
                 writeln!(w, "SUPERVISOR EXTERNAL INTERRUPT: {:x}", stval);
             }
             scause::Interrupt::Unknown => {
-                writeln!(w, "Unknown interupt: {:x}", stval);
+                writeln!(w, "Unknown interrupt: {:x}", stval);
             }
         },
         Trap::Exception(ex) => {
             let mut console = unsafe { console::force_unlock() };
-            writeln!(console, "*** EXCECPTION ***").ok();
+            writeln!(console, "*** EXCEPTION ***").ok();
             writeln!(console, "sepc    = 0x{:x}", sepc).ok();
             writeln!(console, "sstatus = {:?}", sstatus).ok();
             writeln!(console, " .sie   = {:?}", sstatus.sie()).ok();
@@ -519,7 +523,39 @@ extern "C" fn trap(regs: &mut TrapRegisters) {
             writeln!(console, " .code  = {:?}", scause.code()).ok();
             writeln!(console, " .cause = {:?}", scause.cause()).ok();
             writeln!(console, "stval   = 0x{:x}", stval).ok();
-            writeln!(console, "regs    = {:#?}", regs).ok();
+            writeln!(console, "registers:", registers).ok();
+            writeln!(console, "  ra    = 0x{:x}", registers.ra);
+            writeln!(console, "  sp    = 0x{:x}", registers.sp);
+            writeln!(console, "  gp    = 0x{:x}", registers.gp);
+            writeln!(console, "  tp    = 0x{:x}", registers.tp);
+            writeln!(console, "  t0    = 0x{:x}", registers.t0);
+            writeln!(console, "  t1    = 0x{:x}", registers.t1);
+            writeln!(console, "  t2    = 0x{:x}", registers.t2);
+            writeln!(console, "  s0    = 0x{:x}", registers.s0);
+            writeln!(console, "  s1    = 0x{:x}", registers.s1);
+            writeln!(console, "  a0    = 0x{:x}", registers.a0);
+            writeln!(console, "  a1    = 0x{:x}", registers.a1);
+            writeln!(console, "  a2    = 0x{:x}", registers.a2);
+            writeln!(console, "  a3    = 0x{:x}", registers.a3);
+            writeln!(console, "  a4    = 0x{:x}", registers.a4);
+            writeln!(console, "  a5    = 0x{:x}", registers.a5);
+            writeln!(console, "  a6    = 0x{:x}", registers.a6);
+            writeln!(console, "  a7    = 0x{:x}", registers.a7);
+            writeln!(console, "  s2    = 0x{:x}", registers.s2);
+            writeln!(console, "  s3    = 0x{:x}", registers.s3);
+            writeln!(console, "  s4    = 0x{:x}", registers.s4);
+            writeln!(console, "  s5    = 0x{:x}", registers.s5);
+            writeln!(console, "  s6    = 0x{:x}", registers.s6);
+            writeln!(console, "  s7    = 0x{:x}", registers.s7);
+            writeln!(console, "  s8    = 0x{:x}", registers.s8);
+            writeln!(console, "  s9    = 0x{:x}", registers.s9);
+            writeln!(console, "  s10   = 0x{:x}", registers.s10);
+            writeln!(console, "  s11   = 0x{:x}", registers.s11);
+            writeln!(console, "  t3    = 0x{:x}", registers.t3);
+            writeln!(console, "  t4    = 0x{:x}", registers.t4);
+            writeln!(console, "  t5    = 0x{:x}", registers.t5);
+            writeln!(console, "  t6    = 0x{:x}", registers.t6);
+            
             let instruction = unsafe { *(sepc as *const u32) };
             writeln!(console, "pc      = 0x{:x}", sepc).ok();
             writeln!(console, "ins     = 0x{:08x}", instruction).ok();
@@ -567,7 +603,7 @@ macro_rules! wait_for {
 }
 
 pub enum CriticalSectionError {
-    RenteredCriticalSection,
+    ReenteredCriticalSection,
 }
 
 pub static CRITICAL_SECTION_LOCK: Mutex<CritLock> = Mutex::new(CritLock { _opaque: () });

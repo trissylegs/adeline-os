@@ -117,7 +117,7 @@ pub struct Plic {
     pub phandle: PHandle,
     pub number_of_sources: u32,
     pub reg: PhysicalAddressRange,
-    // Spefified by interrupts extended.
+    // Specified by interrupts extended.
     pub contexts: Vec<InterruptContext>,
 }
 
@@ -580,12 +580,12 @@ fn parse_interrupt_extended<'a>(
     result
 }
 
-pub trait IommuRegions {
+pub trait MmioRegions {
     type Iter: Iterator<Item = PhysicalAddressRange>;
     fn get_mmio_regions(&self) -> Self::Iter;
 }
 
-impl IommuRegions for Plic {
+impl MmioRegions for Plic {
     type Iter = core::iter::Once<PhysicalAddressRange>;
 
     fn get_mmio_regions(&self) -> Self::Iter {
@@ -593,7 +593,7 @@ impl IommuRegions for Plic {
     }
 }
 
-impl IommuRegions for UartNS16550a {
+impl MmioRegions for UartNS16550a {
     type Iter = core::iter::Once<PhysicalAddressRange>;
 
     fn get_mmio_regions(&self) -> Self::Iter {
@@ -601,7 +601,7 @@ impl IommuRegions for UartNS16550a {
     }
 }
 
-impl IommuRegions for Rtc {
+impl MmioRegions for Rtc {
     type Iter = core::iter::Once<PhysicalAddressRange>;
 
     fn get_mmio_regions(&self) -> Self::Iter {
@@ -609,7 +609,7 @@ impl IommuRegions for Rtc {
     }
 }
 
-impl IommuRegions for HwInfo {
+impl MmioRegions for HwInfo {
     type Iter = impl Iterator<Item = PhysicalAddressRange>;
 
     fn get_mmio_regions(&self) -> Self::Iter {
@@ -660,7 +660,7 @@ pub struct MemoryLayout {
 }
 
 impl HwInfo {
-    fn memeory_layout(&self) -> MemoryLayout {
+    fn memory_layout(&self) -> MemoryLayout {
         let image = image();
         
         MemoryLayout {

@@ -185,7 +185,7 @@ pub fn park_for(duration: Duration) {
     let hsm = hsm_extension();
 
     set_timer(until).expect("failed to to set timer");
-    hsm.hart_rentative_suspend(crate::sbi::hart::RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND)
+    hsm.hart_retentive_suspend(crate::sbi::hart::RetentiveSuspendType::DEFAULT_RETENTIVE_SUSPEND)
         .expect("failed to suspend");
 }
 
@@ -197,8 +197,8 @@ pub fn sleep(duration: Duration) {
 
     loop {
         set_timer(until).expect("failed to to set timer");
-        hsm.hart_rentative_suspend(
-            crate::sbi::hart::RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND,
+        hsm.hart_retentive_suspend(
+            crate::sbi::hart::RetentiveSuspendType::DEFAULT_RETENTIVE_SUSPEND,
         )
         .expect("failed to suspend");
 

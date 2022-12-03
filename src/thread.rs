@@ -112,8 +112,8 @@ pub fn run_thread(hart_id: HartId, thread: &'static mut ThreadState) {
 
     loop {
         println!("Suspending Thread #{}", thread.id.0);
-        hsm.hart_rentative_suspend(
-            crate::sbi::hart::RentativeSuspendType::DEFAULT_RETENTIVE_SUSPEND,
+        hsm.hart_retentive_suspend(
+            crate::sbi::hart::RetentiveSuspendType::DEFAULT_RETENTIVE_SUSPEND,
         );
     }
 }

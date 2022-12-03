@@ -144,11 +144,11 @@ bitflags! {
         const U = 1 << 4;
         #[doc = "Global page. Is present in all page tables. Affects TLB performance."]        
         const G = 1 << 5;
-        #[doc = "Page has been read since A was last cleared. Page might have been speculartively read."]
+        #[doc = "Page has been read since A was last cleared. Page might have been speculatively read."]
         const A = 1 << 6;
-        #[doc = "Page has been modified since D was last cleared. Must be strickly written to and not speculatively touched."]
+        #[doc = "Page has been modified since D was last cleared. Must be actually written to and not just speculatively touched."]
         const D = 1 << 7;
-        #[doc = "Bits free for use by superviser mode software. Hardare will no touch this."]        
+        #[doc = "Bits free for use by supervisor mode software. Hardware will no touch this."]        
         const RSW = BITS_2 << 8;
         #[doc = "Physical page number lowest 9 bits. Must be zero in mega or giga pages."]
         const PPN_0 = BITS_9 << 10;
