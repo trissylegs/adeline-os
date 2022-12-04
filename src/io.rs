@@ -133,7 +133,7 @@ pub enum ErrorKind {
     FilesystemLoop,
     /// Stale network file handle.
     ///
-    /// With some network filesystems, notably NFS, an open file (or directory) can be invalidated
+    /// With some network filesystem, notably NFS, an open file (or directory) can be invalidated
     /// by problems with the network or server.
     StaleNetworkFileHandle,
     /// A parameter was incorrect.
@@ -312,14 +312,14 @@ impl<R: Read+Sized> Take<R> {
 
 impl<R: Read+Sized> Read for Take<R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let remaing: usize = match self.amount_remaining().try_into() {
+        let reaming: usize = match self.amount_remaining().try_into() {
             Ok(n) => n,
             _ => usize::MAX
         };
         
         
         let buf_len = buf.len();
-        let b = if remaing > buf.len() {
+        let b = if reaming > buf.len() {
             buf
         } else {
             &mut buf[..buf_len]

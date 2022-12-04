@@ -9,7 +9,7 @@ use riscv::register::{self, sstatus};
 
 use crate::{
     sbi::{hart::hsm_extension, timer::TIMER_EXTENSION},
-    TrapRegisters,
+    trap::TrapRegisters,
 };
 
 pub mod rtc;
@@ -35,7 +35,7 @@ pub(crate) fn init_time(hwinfo: &crate::hwinfo::HwInfo) {
 fn get_mtime_per_second() -> u64 {
     let hz = MTIME_PER_SECOND.load(Ordering::Relaxed);
     NonZeroU64::new(hz)
-        .unwrap_or_else(|| panic!("{} has not been initialzed", module_path!()))
+        .unwrap_or_else(|| panic!("{} has not been initialized", module_path!()))
         .get()
 }
 
@@ -108,7 +108,7 @@ impl Instant {
 
     pub fn duration_since(&self, earlier: Instant) -> Duration {
         self.checked_duration_since(earlier)
-            .expect("eariler is later than self")
+            .expect("earlier is later than self")
     }
 
     pub fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
@@ -177,7 +177,7 @@ impl Sub<Instant> for Instant {
     }
 }
 
-/// Set the interrtupt timer and suspend. Returning on the next interrupt.
+/// Set the interrupt timer and suspend. Returning on the next interrupt.
 pub fn park_for(duration: Duration) {
     let start = Instant::now();
     let until = start + duration;
@@ -235,7 +235,7 @@ pub fn set_timer(instant: Instant) -> Result<(), crate::sbi::SbiError> {
     r
 }
 
-pub(crate) fn interrupt_handler(mut w: impl Write, _regs: &mut TrapRegisters) {
+pub(crate) fn interrupt_handler(mut w: impl Write, _registers: &mut TrapRegisters) {
     let time = get_mtime();
     let last_set = LAST_SET_TIMER.load(Ordering::SeqCst);
     let timer = TIMER_EXTENSION.get().expect("no timer extension");

@@ -3,7 +3,7 @@ use linked_list_allocator::LockedHeap;
 
 const BASIC_POOL_SIZE: usize = 1024 * 1024;
 
-// Mutable so it get's linked into the correct section. mut keyword may not actually be nessasary.
+// Mutable so it get's linked into the correct section. mut keyword may not actually be necessary.
 static mut BASIC_POOL: BasicPoolMemory = BasicPoolMemory::new();
 static HAS_INIT: AtomicBool = AtomicBool::new(false);
 

@@ -9,7 +9,7 @@ use crate::{
         hart::{HartId, HartState, Hsm},
         BASE_EXTENSION,
     },
-    TrapRegisters,
+    trap::TrapRegisters,
 };
 
 pub type ThreadEntry = alloc::boxed::Box<dyn Fn()>;
