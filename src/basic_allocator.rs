@@ -1,9 +1,13 @@
 use core::sync::atomic::AtomicBool;
+use core::fmt::Write;
 use linked_list_allocator::LockedHeap;
+
+use crate::console::sbi_console;
 
 const BASIC_POOL_SIZE: usize = 1024 * 1024;
 
 // Mutable so it get's linked into the correct section. mut keyword may not actually be necessary.
+#[cfg(feature = "basic_pool")]
 static mut BASIC_POOL: BasicPoolMemory = BasicPoolMemory::new();
 static HAS_INIT: AtomicBool = AtomicBool::new(false);
 
@@ -27,7 +31,22 @@ impl BasicPoolMemory {
     }
 }
 
-pub(crate) fn init() {
+pub(crate) fn init_from_free_space(start: *mut u8, end: *const u8) {
+    assert!((start as usize) < (end as usize));
+    let heap_size = (end as usize) - (start as usize);    
+    unsafe {
+        writeln!(sbi_console(), "HEAP BYTES: {}", heap_size);
+    }
+
+    unsafe {
+        let mut heap = HEAP.lock();
+        heap.init(start, heap_size);
+    }
+
+}
+
+#[cfg(feature = "basic_pool")]
+pub(crate) fn init() {    
     if HAS_INIT.swap(true, core::sync::atomic::Ordering::Acquire) {
         return;
     }

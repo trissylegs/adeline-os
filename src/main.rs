@@ -39,7 +39,7 @@ use core::{
     arch::asm,
     cell::UnsafeCell,
     sync::atomic::AtomicBool,
-    time::Duration,
+    time::Duration, ffi::c_void,
 };
 
 use riscv::register::{
@@ -57,7 +57,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer}, pagetable::dumb_map,
+    linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer, __image_end}, pagetable::dumb_map,
 };
 use crate::pagetable::GIGA_PAGE_SIZE;
 
@@ -105,7 +105,9 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     }
 
     sbi::init();
-    basic_allocator::init();
+    unsafe {        
+        basic_allocator::init_from_free_space(&mut __image_end as *mut c_void as *mut u8, dtb);
+    }
 
     let hwinfo = hwinfo::setup_dtb(dtb);
     STACK_GUARD.check();
@@ -205,12 +207,6 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     };
 
     pagetable::print_current_page_table();
-
-    let test_ptr = (2 * GIGA_PAGE_SIZE) as *mut u8;
-    unsafe {
-        println!("Expecting page fault.");
-        let _res = *test_ptr;
-    }
 
     let hsm = hsm_extension();
 
