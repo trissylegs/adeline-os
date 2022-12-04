@@ -4,27 +4,27 @@ use core::{ffi::c_void, ops::Range};
 use crate::console;
 
 extern "C" {
-    pub static mut __image_start: c_void;
-    pub static mut __image_end: c_void;
-    pub static mut __text_start: c_void;
-    pub static mut __text_end: c_void;
-    pub static mut __rodata_start: c_void;
-    pub static mut __rodata_end: c_void;
-    pub static mut __data_start: c_void;
-    pub static mut __data_end: c_void;
-    pub static mut __bss_start: c_void;
-    pub static mut __bss_end: c_void;
-    pub static mut __stack_limit: c_void;
-    pub static mut __stack_top: c_void;
-    pub static mut __tdata_start: c_void;
-    pub static mut __tdata_end: c_void;
-    pub static mut __tbss_start: c_void;
-    pub static mut __tbss_end: c_void;
+    pub static mut __image_start: u8;
+    pub static mut __image_end: u8;
+    pub static mut __text_start: u8;
+    pub static mut __text_end: u8;
+    pub static mut __rodata_start: u8;
+    pub static mut __rodata_end: u8;
+    pub static mut __data_start: u8;
+    pub static mut __data_end: u8;
+    pub static mut __bss_start: u8;
+    pub static mut __bss_end: u8;
+    pub static mut __stack_limit: u8;
+    pub static mut __stack_top: u8;
+    pub static mut __tdata_start: u8;
+    pub static mut __tdata_end: u8;
+    pub static mut __tbss_start: u8;
+    pub static mut __tbss_end: u8;
 
     pub static mut __global_pointer: c_void;
 }
 
-unsafe fn range_from(start: &'static c_void, end: &'static c_void) -> Range<u64> {
+unsafe fn range_from(start: &'static u8, end: &'static u8) -> Range<u64> {
     let ptr_start = start as *const _;
     let ptr_end = end as *const _;
     (ptr_start as u64)..(ptr_end as u64)
@@ -64,7 +64,7 @@ macro_rules! write_address {
             $w,
             "{:30}:   {:>16?}",
             stringify!($var),
-            &$var as *const c_void
+            &$var as *const u8
         )
         .ok();
     };

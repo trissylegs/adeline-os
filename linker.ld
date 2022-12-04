@@ -10,29 +10,29 @@ SECTIONS {
         __text_start = .;
         *(.text.init);
         . = ALIGN(4096);
-        *(.text);
+        *(.text*);
         . = ALIGN(4096);
         __text_end = .;
-    } 
+    }
 
     .rodata : ALIGN(4K) {
         __rodata_start = .;
-        *(.rodata);
+        *(.rodata*);
         . = ALIGN(4096);
         __rodata_end = .;
     }
 
     .data : ALIGN(4K) {
         __data_start = .;
-        *(.data);
+        *(.data*);
         . = ALIGN(4096);
         __data_end = .;
     }
 
     .bss : ALIGN(4K) {
-        __bss_start = .;  
-        *(.bss);
-        *(.stack_guard);
+        __bss_start = .;
+        *(.bss*);
+        *(.stack_guard*);
         __stack_limit = .;
         . += 0x8000;
         PROVIDE(__stack_top = .);
@@ -44,11 +44,11 @@ SECTIONS {
 
     .tdata : ALIGN(4K) {
         __tdata_start = .;
-        *(.tdata);
+        *(.tdata*);
         . = ALIGN(4096);
         __tdata_end = .;
         __tbss_start = .;
-        *(.tbss);
+        *(.tbss*);
         . = ALIGN(4096);
         __tbss_end = .;
     }

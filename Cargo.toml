@@ -17,6 +17,7 @@ spin = { version = "0.9", default-features = false, features = [ "lock_api","mut
 time = { version = "0.3", default-features = false, features = [ "alloc", "macros", "parsing" ] }
 volatile = "0.4.4"
 const-default = { version = "1.0", features = ["derive"] }
+derive_more = "0.99.0"
 
 [features]
 default = []
