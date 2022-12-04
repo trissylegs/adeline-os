@@ -1,3 +1,14 @@
+
+use core::fmt::{Debug, Write};
+
+use riscv::register::{
+    scause::{self, Trap},
+    sepc, sie, sstatus, stval,
+};
+
+use crate::console::{LockOrDummy, self};
+use crate::isr::Sip;
+
 #[repr(C)]
 pub struct TrapRegisters {
     pub ra: u64,
@@ -76,7 +87,7 @@ impl Debug for TrapRegisters {
 extern "C" fn trap(registers: &mut TrapRegisters) {
     let sepc = sepc::read();
     let sstatus = sstatus::read();
-    let sie = sie::read();
+    let sie_val = sie::read();
     let sip = Sip::read();
     let scause = scause::read();
     let stval = stval::read();
@@ -85,7 +96,7 @@ extern "C" fn trap(registers: &mut TrapRegisters) {
 
     writeln!(w, "sepc: {:?}", sepc);
     writeln!(w, "sstatus: {:?}", sstatus);
-    writeln!(w, "sie: {:?}", sie);
+    writeln!(w, "sie: {:?}", sie_val);
     writeln!(w, "sip: {:?}", sip);
     writeln!(w, "scause: {:?}", scause.cause());
     writeln!(w, "stval: {:?}", stval);
@@ -102,7 +113,7 @@ extern "C" fn trap(registers: &mut TrapRegisters) {
                 writeln!(w, "USER TIMER: {:x}", stval);
             }
             scause::Interrupt::SupervisorTimer => {
-                time::interrupt_handler(w, registers);
+                crate::time::interrupt_handler(w, registers);
             }
             scause::Interrupt::UserExternal => {
                 writeln!(w, "USER EXTERNAL INTERRUPT: {:x}", stval);
@@ -126,7 +137,13 @@ extern "C" fn trap(registers: &mut TrapRegisters) {
             writeln!(console, " .upie  = {:?}", sstatus.upie()).ok();
             writeln!(console, " .fs    = {:?}", sstatus.fs()).ok();
             writeln!(console, " .xs    = {:?}", sstatus.xs()).ok();
-            writeln!(console, "sie     = {:?}", sie).ok();
+            writeln!(console, "sie     = {:?}", sie_val).ok();
+            writeln!(console, " .ssoft   = {:?}", sie_val.ssoft());
+            writeln!(console, " .stimer  = {:?}", sie_val.stimer());
+            writeln!(console, " .sext    = {:?}", sie_val.sext());
+            writeln!(console, " .usoft   = {:?}", sie_val.usoft());
+            writeln!(console, " .utimer  = {:?}", sie_val.utimer());
+            writeln!(console, " .uext    = {:?}", sie_val.uext());
             writeln!(console, "scause  = 0x{:x}", scause.bits()).ok();
             writeln!(console, " .code  = {:?}", scause.code()).ok();
             writeln!(console, " .cause = {:?}", scause.cause()).ok();

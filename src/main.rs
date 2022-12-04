@@ -38,22 +38,19 @@ use ::time::OffsetDateTime;
 use core::{
     arch::asm,
     cell::UnsafeCell,
-    fmt::{Debug, Write},
     sync::atomic::AtomicBool,
     time::Duration,
 };
 
 use riscv::register::{
     mtvec,
-    scause::{self, Trap},
-    sepc, sie, sstatus, stval, stvec, satp,
+     sie, sstatus,  stvec, satp,
 };
 use spin::Mutex;
 
 use crate::{
-    console::LockOrDummy,
     hwinfo::{MmioRegions, MemoryRegions, ReservedRegions},
-    isr::{plic, Sip},
+    isr::plic,
     prelude::*,
     sbi::{
         hart::{hsm_extension, HartId},
@@ -62,6 +59,7 @@ use crate::{
     time::{sleep, Instant},
     linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer}, pagetable::dumb_map,
 };
+use crate::pagetable::GIGA_PAGE_SIZE;
 
 #[repr(align(4096))]
 pub struct StackGuardPage {
@@ -207,6 +205,12 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     };
 
     pagetable::print_current_page_table();
+
+    let test_ptr = (2 * GIGA_PAGE_SIZE) as *mut u8;
+    unsafe {
+        println!("Expecting page fault.");
+        let _res = *test_ptr;
+    }
 
     let hsm = hsm_extension();
 

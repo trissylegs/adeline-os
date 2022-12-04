@@ -1,11 +1,13 @@
-
 use core::hash::Hash;
 
-use crate::{prelude::*, basic_consts::*};
+use crate::{
+    basic_consts::*,
+    prelude::*,
+};
 
-use riscv::register::{self, satp::Mode};
-use const_default::ConstDefault;
 use bitflags::bitflags;
+use const_default::ConstDefault;
+use riscv::register::{self, satp::Mode};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirtualAddress(pub u64);
@@ -27,7 +29,7 @@ pub enum Rsw {
     Rsw0 = 0,
     Rsw1 = 1,
     Rsw2 = 2,
-    Rsw3 = 3
+    Rsw3 = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -35,7 +37,7 @@ pub enum Pbmt {
     Pma = 0,
     Nc = 1,
     Io = 2,
-    _Reserved = 3
+    _Reserved = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -46,14 +48,17 @@ pub struct Permissions {
 }
 
 impl Permissions {
-
     /// Create struct accounting checking the mode is supported.
     /// The spec marks `write && !read` as "Reserved".
-    pub fn try_new(read: bool, write: bool, execute: bool) -> Option<Self> {        
+    pub fn try_new(read: bool, write: bool, execute: bool) -> Option<Self> {
         if write && !read {
-            None 
+            None
         } else {
-            Some(Self { read, write, execute })
+            Some(Self {
+                read,
+                write,
+                execute,
+            })
         }
     }
 
@@ -64,7 +69,7 @@ impl Permissions {
 
 pub fn print_current_page_table() {
     let satp = register::satp::read();
-     
+
     println!("PageTable: {{");
     println!("  mode: {:?}", satp.mode());
     println!("  asid: {:?}", satp.asid());
@@ -83,14 +88,14 @@ pub struct PageTable {
 
 impl ConstDefault for PageTable {
     const DEFAULT: Self = Self {
-        entries: [Entry::DEFAULT; 512]
+        entries: [Entry::DEFAULT; 512],
     };
 }
 
-const MEGA_PAGE_SIZE: u64 =          0x200000;
-const GIGA_PAGE_SIZE: u64 =        0x40000000;
-const TERA_PAGE_SIZE: u64 =   0x2000000000000;
-const PETA_PAGE_SIZE: u64 = 0x400000000000000;
+pub const MEGA_PAGE_SIZE: u64 = 0x200000;
+pub const GIGA_PAGE_SIZE: u64 = 0x40000000;
+pub const TERA_PAGE_SIZE: u64 = 0x2000000000000;
+pub const PETA_PAGE_SIZE: u64 = 0x400000000000000;
 
 pub fn dumb_map() -> PageTable {
     let mut pt = PageTable::DEFAULT;
@@ -142,20 +147,20 @@ bitflags! {
         const X = 1 << 3;
         #[doc = "User accessible. If `SUM` is set in sstatus. Then this page is NOT readable from S-mode."]
         const U = 1 << 4;
-        #[doc = "Global page. Is present in all page tables. Affects TLB performance."]        
+        #[doc = "Global page. Is present in all page tables. Affects TLB performance."]
         const G = 1 << 5;
         #[doc = "Page has been read since A was last cleared. Page might have been speculatively read."]
         const A = 1 << 6;
         #[doc = "Page has been modified since D was last cleared. Must be actually written to and not just speculatively touched."]
         const D = 1 << 7;
-        #[doc = "Bits free for use by supervisor mode software. Hardware will no touch this."]        
+        #[doc = "Bits free for use by supervisor mode software. Hardware will no touch this."]
         const RSW = BITS_2 << 8;
         #[doc = "Physical page number lowest 9 bits. Must be zero in mega or giga pages."]
         const PPN_0 = BITS_9 << 10;
         #[doc = "Physical page number second lowest 9 bits. Must be zero in giga pages."]
         const PPN_1 = BITS_9 << 19;
         #[doc = "Highest 26 bits in physical page number."]
-        const PPN_2 = BITS_26 << 28;        
+        const PPN_2 = BITS_26 << 28;
 
         #[doc = "Page caching mode. Specified by Svpbmt extension"]
         const PBMT  = BITS_2 << 61;
@@ -166,7 +171,9 @@ bitflags! {
 
 impl Entry {
     pub fn builder() -> EntryBuilder {
-        EntryBuilder { entry: Entry::empty() }
+        EntryBuilder {
+            entry: Entry::empty(),
+        }
     }
 }
 
@@ -282,7 +289,11 @@ impl Entry {
         let read = (self & Self::R).is_empty();
         let write = (self & Self::W).is_empty();
         let execute = (self & Self::X).is_empty();
-        Permissions { read, write, execute }
+        Permissions {
+            read,
+            write,
+            execute,
+        }
     }
 
     pub fn user_accessible(self) -> bool {
@@ -301,4 +312,3 @@ impl Entry {
         (self & Self::D).is_empty()
     }
 }
-
