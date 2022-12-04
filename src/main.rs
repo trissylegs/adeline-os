@@ -37,8 +37,7 @@ use ::time::OffsetDateTime;
 use core::{
     arch::asm,
     cell::UnsafeCell,
-    ffi::c_void,
-    fmt::{Debug, Write},    
+    fmt::{Debug, Write},
     sync::atomic::AtomicBool,
     time::Duration,
 };
@@ -60,7 +59,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__bss_start, __bss_end, __stack_top, __global_pointer}, pagetable::dumb_map,
+    linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer}, pagetable::dumb_map,
 };
 
 #[repr(align(4096))]
@@ -124,7 +123,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     time::rtc::init(hwinfo);
 
     linker_info::print_address_ranges();
-    println!(" fdt:         {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
+    println!(    " fdt:     {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
 
     for mmio in hwinfo.get_mmio_regions() {
         println!("mmio:     {:08x} - {:08x}", mmio.start, mmio.end);
@@ -151,7 +150,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
         // stvec uses WARL. (Write any values, read legal values)
         stvec::read()
     };
-        
+
 
     println!(
         "stvec address: Wrote: {:?}. Read: {:?}",
@@ -195,13 +194,13 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
         let mut pt = WIP_PAGETABLE.lock();
         *pt = dumb_map();
         println!("{:?}", *pt);
-        
+
         let root_addr = (&*pt) as *const PageTable as u64;
         // Update page table
         let pa = pagetable::PhysicalAddress(root_addr);
         let ppn = pa.ppn();
-        
-        unsafe {         
+
+        unsafe {
             satp::set(satp::Mode::Sv48, 1, ppn as usize);
         }
     };
@@ -326,26 +325,6 @@ impl Debug for TrapRegisters {
 }
 
 // Do a memset ensuring we don't use any stack memory.
-#[naked]
-#[cfg(target_pointer_width = "64")]
-pub unsafe extern "C" fn stackless_clear_memory(a: *mut u8, b: *mut u8) {
-    asm!(
-        // Rules:
-        // * cannot touch stack or global memory.
-        // * must preserve s0...s11
-        "
-        bgeu a0,   a1, 3f
-    2:
-        sd   zero, 0(a0)
-        addi a0,   a0, {reg_size}
-        bltu a0,   a1, 2b
-    3:
-        ret
-        ",
-        reg_size = const core::mem::size_of::<usize>(),
-        options(noreturn)
-    );
-}
 
 #[naked]
 #[no_mangle]
@@ -364,10 +343,12 @@ pub unsafe extern "C" fn _start(hart_id: usize, dev_tree: *const u8) -> ! {
         "mv   s0, a0",
         "mv   s1, a1",
 
-        // stackless_clear_memory(bss_start, bss_end)
+        // memset(bss_start, 0, stack_limit - bss_start);
         "la   a0, {bss_start}",
-        "la   a1, {bss_end}",
-        "call {stackless_clear_memory}",
+        "li   a1, 0",
+        "la   a2, {stack_limit}",
+        "sub  a2, a2, a0",
+        "call memset",
 
         // kmain(hart_id, device_tree)
         "mv   a0, s0",             // heart_id: usize
@@ -376,9 +357,7 @@ pub unsafe extern "C" fn _start(hart_id: usize, dev_tree: *const u8) -> ! {
         global_pointer = sym __global_pointer,
         stack_top = sym __stack_top,
         bss_start = sym __bss_start,
-        bss_end = sym __bss_end,
-
-        stackless_clear_memory = sym stackless_clear_memory,
+        stack_limit = sym __stack_limit,
         kmain = sym kmain,
         options(noreturn)
     )
@@ -523,7 +502,7 @@ extern "C" fn trap(registers: &mut TrapRegisters) {
             writeln!(console, " .code  = {:?}", scause.code()).ok();
             writeln!(console, " .cause = {:?}", scause.cause()).ok();
             writeln!(console, "stval   = 0x{:x}", stval).ok();
-            writeln!(console, "registers:", registers).ok();
+            writeln!(console, "registers:").ok();
             writeln!(console, "  ra    = 0x{:x}", registers.ra);
             writeln!(console, "  sp    = 0x{:x}", registers.sp);
             writeln!(console, "  gp    = 0x{:x}", registers.gp);
@@ -555,7 +534,7 @@ extern "C" fn trap(registers: &mut TrapRegisters) {
             writeln!(console, "  t4    = 0x{:x}", registers.t4);
             writeln!(console, "  t5    = 0x{:x}", registers.t5);
             writeln!(console, "  t6    = 0x{:x}", registers.t6);
-            
+
             let instruction = unsafe { *(sepc as *const u32) };
             writeln!(console, "pc      = 0x{:x}", sepc).ok();
             writeln!(console, "ins     = 0x{:08x}", instruction).ok();
