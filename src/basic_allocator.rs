@@ -3,6 +3,7 @@ use core::fmt::Write;
 use linked_list_allocator::LockedHeap;
 
 use crate::console::sbi_console;
+use crate::hwinfo::{PhysicalAddressRange, PhysicalAddressKind, HwInfo, DtbRef};
 
 const BASIC_POOL_SIZE: usize = 1024 * 1024;
 
@@ -31,23 +32,36 @@ impl BasicPoolMemory {
     }
 }
 
-pub(crate) fn init_from_free_space(start: *mut u8, end: *const u8) {
-    assert!((start as usize) < (end as usize));
-    let heap_size = (end as usize) - (start as usize);    
+pub(crate) unsafe fn init_from_free_space(start: *mut u8, end: &DtbRef) {
+    assert!((start as usize) < (end.start() as usize));
+    let heap_size = (end.start() as usize) - (start as usize);
     unsafe {
-        writeln!(sbi_console(), "HEAP BYTES: {}", heap_size);
+        writeln!(sbi_console(), "HEAP BYTES: {}", heap_size).ok();
     }
+    let mut heap = HEAP.lock();
+    heap.init(start, heap_size);
+}
 
-    unsafe {
-        let mut heap = HEAP.lock();
-        heap.init(start, heap_size);
+pub fn heap_range() -> PhysicalAddressRange {
+    let heap = HEAP.lock();
+    let start = heap.bottom() as u64;
+    let end = heap.top() as u64;
+    PhysicalAddressRange::new(start..end, PhysicalAddressKind::Writable, "heap".into())
+}
+
+pub(crate) unsafe fn finish_init(hwinfo: &HwInfo) {
+    let ram = &hwinfo.ram[0];
+    let end_of_ram = ram.end;
+    let mut heap = HEAP.lock();
+    let top = heap.top() as u64;
+    if top < end_of_ram {
+        heap.extend((end_of_ram - top) as usize);
     }
-
 }
 
 #[cfg(feature = "basic_pool")]
-pub(crate) fn init() {    
-    if HAS_INIT.swap(true, core::sync::atomic::Ordering::Acquire) {
+pub(crate) fn init() {
+    if HAS_INIT.swap(true, Ordering::Acquire) {
         return;
     }
     unsafe {

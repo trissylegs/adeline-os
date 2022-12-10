@@ -7,6 +7,7 @@
 #![feature(error_in_core)]
 #![feature(fn_align)]
 #![feature(type_alias_impl_trait)]
+#![feature(int_roundings)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(dead_code)]
@@ -33,13 +34,14 @@ mod trap;
 mod util;
 
 use const_default::ConstDefault;
+use hwinfo::DtbRef;
 use pagetable::{PageTable};
 use ::time::OffsetDateTime;
 use core::{
     arch::asm,
     cell::UnsafeCell,
     sync::atomic::AtomicBool,
-    time::Duration, ffi::c_void,
+    time::Duration,
 };
 
 use riscv::register::{
@@ -49,7 +51,7 @@ use riscv::register::{
 use spin::Mutex;
 
 use crate::{
-    hwinfo::{MmioRegions, MemoryRegions, ReservedRegions},
+    hwinfo::{BigPages},
     isr::plic,
     prelude::*,
     sbi::{
@@ -59,7 +61,6 @@ use crate::{
     time::{sleep, Instant},
     linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer, __image_end}, pagetable::dumb_map,
 };
-use crate::pagetable::GIGA_PAGE_SIZE;
 
 #[repr(align(4096))]
 pub struct StackGuardPage {
@@ -94,7 +95,7 @@ static BOOTLOOP_DETECT: AtomicBool = AtomicBool::new(false);
 static WIP_PAGETABLE: Mutex<PageTable> = Mutex::new(PageTable::DEFAULT);
 
 #[no_mangle]
-pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
+pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
     unsafe {
         STACK_GUARD.init();
     }
@@ -105,11 +106,16 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     }
 
     sbi::init();
-    unsafe {        
-        basic_allocator::init_from_free_space(&mut __image_end as *mut c_void as *mut u8, dtb);
+    unsafe {
+        basic_allocator::init_from_free_space(&mut __image_end as *mut u8 as *mut u8, &dtb);
     }
 
     let hwinfo = hwinfo::setup_dtb(dtb);
+    unsafe {
+        basic_allocator::finish_init(hwinfo);
+    }
+
+
     STACK_GUARD.check();
 
     unsafe {
@@ -124,19 +130,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     time::rtc::init(hwinfo);
 
     linker_info::print_address_ranges();
-    println!(    " fdt:     {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
-
-    for mmio in hwinfo.get_mmio_regions() {
-        println!("mmio:     {:08x} - {:08x}", mmio.start, mmio.end);
-    }
-
-    for reserved in hwinfo.get_reserved_regions() {
-        println!("reserved: {:08x} - {:08x}", reserved.start, reserved.end);
-    }
-
-    for mem in hwinfo.get_memory_regions() {
-        println!("memory:   {:08x} - {:08x}", mem.start, mem.end);
-    }
+    // println!(    "fdt:      {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
 
     let now = Instant::now();
     println!("now = {:?}", now);
@@ -207,6 +201,30 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: *const u8) -> ! {
     };
 
     pagetable::print_current_page_table();
+
+    for mr in hwinfo.memory_layout() {
+        println!("{:?}", mr);
+
+        let mut level_start = BigPages::Page(0);
+        let mut prev_level = 99;
+        let mut level_count = 0;
+
+        for p in mr.big_pages() {
+            let level = p.level();
+            if prev_level != level {
+                if level_count > 0 {
+                    println!("  {} ({} times)", level_start, level_count);
+                    level_count = 0;
+                }
+                level_start = p;
+                prev_level = level;
+            }
+            level_count += 1;
+        }
+        if level_count > 0 {
+            println!("  {} ({} times)", level_start, level_count);
+        }
+    }
 
     let hsm = hsm_extension();
 

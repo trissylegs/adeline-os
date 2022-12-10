@@ -9,9 +9,13 @@ use riscv::register::{
 use crate::console::{LockOrDummy, self};
 use crate::isr::Sip;
 
+/// Registers saved to stack on
 #[repr(C)]
 pub struct TrapRegisters {
+    /// Informative. Won't be restored on trap return. Use sepc
+    pub pc: u64,
     pub ra: u64,
+    /// Informative. Won't be restored on trap return.
     pub sp: u64,
     pub gp: u64,
     pub tp: u64,
@@ -47,6 +51,7 @@ pub struct TrapRegisters {
 impl Debug for TrapRegisters {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TrapRegisters")
+            .field("pc", &format_args!("0x{:>08x}", &self.pc))
             .field("ra", &format_args!("0x{:>08x}", &self.ra))
             .field("sp", &format_args!("0x{:>08x}", &self.sp))
             .field("gp", &format_args!("0x{:>08x}", &self.gp))
@@ -149,6 +154,7 @@ extern "C" fn trap(registers: &mut TrapRegisters) {
             writeln!(console, " .cause = {:?}", scause.cause()).ok();
             writeln!(console, "stval   = 0x{:x}", stval).ok();
             writeln!(console, "registers:").ok();
+            writeln!(console, "  pc    = 0x{:x}", registers.pc);
             writeln!(console, "  ra    = 0x{:x}", registers.ra);
             writeln!(console, "  sp    = 0x{:x}", registers.sp);
             writeln!(console, "  gp    = 0x{:x}", registers.gp);

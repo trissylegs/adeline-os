@@ -3,6 +3,7 @@ use core::hash::Hash;
 use crate::{
     basic_consts::*,
     prelude::*,
+    hwinfo::HwInfo,
 };
 
 use bitflags::bitflags;
@@ -92,6 +93,7 @@ impl ConstDefault for PageTable {
     };
 }
 
+pub const PAGE_SIZE: u64 = 0x1000;
 pub const MEGA_PAGE_SIZE: u64 = 0x200000;
 pub const GIGA_PAGE_SIZE: u64 = 0x40000000;
 pub const TERA_PAGE_SIZE: u64 = 0x2000000000000;
@@ -99,22 +101,25 @@ pub const PETA_PAGE_SIZE: u64 = 0x400000000000000;
 
 pub fn dumb_map() -> PageTable {
     let mut pt = PageTable::DEFAULT;
-    pt.entries[0] = Entry::builder()
-        .for_offset(0)
-        .valid(true)
-        .readable(true)
-        .writable(true)
-        .executable(true)
-        .build();
-    pt.entries[1] = Entry::builder()
-        .for_offset(0x40000000)
-        .valid(true)
-        .readable(true)
-        .writable(true)
-        .executable(true)
-        .build();
-
+    for i in 0..4 {
+        pt.entries[i] = Entry::builder()
+            .for_offset((i * 0x40000000) as u64)
+            .valid(true)
+            .readable(true)
+            .writable(true)
+            .executable(true)
+            .build();
+    }
     pt
+}
+
+pub fn from_hwinfo(_hwinfo: &HwInfo) -> PageTable {
+    let range = _hwinfo.memory_layout();
+    for range in range {
+
+    }
+
+    todo!()
 }
 
 bitflags! {

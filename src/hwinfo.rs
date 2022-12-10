@@ -1,66 +1,86 @@
 use core::{
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Formatter, Display},
     mem::size_of,
-    ops::Range,
+    ops::{Range},
     str,
 };
 
-use alloc::vec::Vec;
+use alloc::{vec::Vec};
 use anyhow::Error;
-use fdt_rs::{base::DevTree, index::DevTreeIndex, prelude::*, spec::Phandle};
+use fdt_rs::{base::DevTree, index::DevTreeIndex, prelude::*, spec::Phandle, error::DevTreeError};
 use spin::Once;
 
 use crate::{
+    basic_allocator,
     isr::plic::InterruptId,
-    linker_info::{bss, image, rodata, text},
+    linker_info::{bss, data, rodata, text},
+    pagetable::{GIGA_PAGE_SIZE, MEGA_PAGE_SIZE, PAGE_SIZE, PETA_PAGE_SIZE, TERA_PAGE_SIZE},
     prelude::*,
     sbi::{
         hart::HartId,
         reset::{shutdown, system_reset_extension},
     },
-    util::DebugHide,
 };
 
 static HW_INFO: Once<HwInfo> = Once::INIT;
-
-pub type PhysicalAddress = u64;
 
 pub type PHandle = u32;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct PhysicalAddressRange {
     pub kind: PhysicalAddressKind,
-    pub start: PhysicalAddress,
-    pub end: PhysicalAddress,
+    pub description: &'static str,
+    pub start: u64,
+    pub end: u64,
 }
 
 impl PhysicalAddressRange {
-    fn new(range: Range<u64>, kind: PhysicalAddressKind) -> Self {
-        PhysicalAddressRange { kind, start: range.start, end: range.end }
+    pub fn new(range: Range<u64>, kind: PhysicalAddressKind, description: &'static str) -> Self {
+        PhysicalAddressRange {
+            kind,
+            start: range.start,
+            end: range.end,
+            description,
+        }
     }
-}
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PhysicalAddressKind {
-    /// Address contains nothing
-    Usable,
-    /// Reserved by SBI.
-    Reserved,
-    ///
-    Mmio,
-    ///
-    OsImage,
-}
+    pub fn page_numbers(&self) -> impl Iterator<Item = u64> {
+        let mut current = self.start;
+        let end = self.end;
+        core::iter::from_fn(move || {
+            let next = current;
+            current += 4096;
+            if next < end {
+                Some(next / 4096)
+            } else {
+                None
+            }
+        })
+    }
 
-impl PhysicalAddressRange {
-    fn as_range(&self) -> Range<PhysicalAddress> {
-        self.start .. self.end
+    pub fn big_pages(&self) -> impl Iterator<Item = BigPages> {
+        let mut current = self.start;
+        let end = page_end(self.end);
+        core::iter::from_fn(move || {
+            let next = current;
+            if next >= end {
+                return None;
+            }
+
+            let remaining = end - next;
+
+            let page = BigPages::page_level_for(next, remaining);
+            current += page.size();
+            return Some(page);
+        })
     }
 }
 
 impl Debug for PhysicalAddressRange {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PhysicalAddressRange")
+            .field("kind", &self.kind)
+            .field("description", &self.description)
             .field(
                 "range",
                 &format_args!("0x{:08x}..0x{:08x}", self.start, self.end),
@@ -69,11 +89,111 @@ impl Debug for PhysicalAddressRange {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BigPages {
+    Page(u64),
+    MegaPage(u64),
+    GigaPage(u64),
+    TeraPage(u64),
+    PetaPage(u64),
+}
+
+impl Display for BigPages {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BigPages::Page(pos) => write!(f, "Page@{:x}", pos),
+            BigPages::MegaPage(pos) => write!(f, "MegaPage@{:x}", pos),
+            BigPages::GigaPage(pos) => write!(f, "GigaPage@{:x}", pos),
+            BigPages::TeraPage(pos) => write!(f, "TeraPage@{:x}", pos),
+            BigPages::PetaPage(pos) => write!(f, "PetaPage@{:x}", pos),
+        }
+    }
+}
+
+pub const PAGE_LEVELS: [(u32, u64); 5] = [
+    (BigPages::Page(0).level(), BigPages::Page(0).size()),
+    (BigPages::MegaPage(0).level(), BigPages::MegaPage(0).size()),
+    (BigPages::GigaPage(0).level(), BigPages::GigaPage(0).size()),
+    (BigPages::TeraPage(0).level(), BigPages::TeraPage(0).size()),
+    (BigPages::PetaPage(0).level(), BigPages::PetaPage(0).size()),
+];
+
+impl BigPages {
+    pub const fn level(self) -> u32 {
+        match self {
+            BigPages::Page(_) => 0,
+            BigPages::MegaPage(_) => 1,
+            BigPages::GigaPage(_) => 2,
+            BigPages::TeraPage(_) => 3,
+            BigPages::PetaPage(_) => 4,
+        }
+    }
+
+    pub const fn size(self) -> u64 {
+        match self {
+            BigPages::Page(_) => PAGE_SIZE,
+            BigPages::MegaPage(_) => MEGA_PAGE_SIZE,
+            BigPages::GigaPage(_) => GIGA_PAGE_SIZE,
+            BigPages::TeraPage(_) => TERA_PAGE_SIZE,
+            BigPages::PetaPage(_) => PETA_PAGE_SIZE,
+        }
+    }
+
+    pub const fn position(self) -> u64 {
+        match self {
+            BigPages::Page(n)
+            | BigPages::MegaPage(n)
+            | BigPages::GigaPage(n)
+            | BigPages::TeraPage(n)
+            | BigPages::PetaPage(n) => n,
+        }
+    }
+
+    fn page_level_for(position: u64, at_most: u64) -> BigPages {
+        for (level, size) in PAGE_LEVELS.iter().rev() {
+            if at_most >= *size && (position & (size - 1) == 0) {
+                match level {
+                    0 => return BigPages::Page(position),
+                    1 => return BigPages::MegaPage(position),
+                    2 => return BigPages::GigaPage(position),
+                    3 => return BigPages::TeraPage(position),
+                    4 => return BigPages::PetaPage(position),
+                    _ => panic!(),
+                }
+            }
+        }
+        panic!(
+            "Invalid page spec: position: {:x}, at_most: {:x}",
+            position, at_most
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PhysicalAddressKind {
+    /// Address contains nothing
+    Usable,
+    /// Reserved by SBI.
+    Reserved,
+    /// Memory mapped io
+    Mmio,
+    /// Executable RAM
+    Executable,
+    /// Read-only RAM
+    ReadOnly,
+    /// Read-write RAM
+    Writable,
+}
+
+impl PhysicalAddressRange {
+    fn as_range(&self) -> Range<u64> {
+        self.start..self.end
+    }
+}
+
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct HwInfo {
-    pub tree: DebugHide<DevTree<'static>>,
-    pub tree_range: PhysicalAddressRange,
     pub timebase_freq: u64,
 
     /// Memory. Currently assuming a single block of RAM.
@@ -94,7 +214,7 @@ pub struct HwInfo {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Hart {
-    pub name: &'static str,
+    pub name: String,
     pub phandle: PHandle,
     pub hart_id: HartId,
     pub interrupt_handle: PHandle,
@@ -103,7 +223,7 @@ pub struct Hart {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct UartNS16550a {
-    pub name: &'static str,
+    pub name: String,
     pub reg: PhysicalAddressRange,
     pub interrupt: InterruptId,
     pub interrupt_parent: PHandle,
@@ -113,7 +233,7 @@ pub struct UartNS16550a {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Plic {
-    pub name: &'static str,
+    pub name: String,
     pub phandle: PHandle,
     pub number_of_sources: u32,
     pub reg: PhysicalAddressRange,
@@ -124,7 +244,7 @@ pub struct Plic {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Clint {
-    pub name: &'static str,
+    pub name: String,
     pub reg: PhysicalAddressRange,
     pub contexts: Vec<InterruptContext>,
 }
@@ -143,7 +263,7 @@ pub struct InterruptContext {
 #[derive(Debug, Clone, derive_builder::Builder)]
 #[builder(no_std)]
 pub struct Rtc {
-    pub name: &'static str,
+    pub name: String,
     pub interrupt: InterruptId,
     pub interrupt_parent: Phandle,
     pub reg: PhysicalAddressRange,
@@ -242,22 +362,43 @@ pub fn dump_dtb(dtb: *const u8) {
     shutdown();
 }
 
-pub fn setup_dtb(dtb: *const u8) -> &'static HwInfo {
+const fn page_end(addr: u64) -> u64 {
+    let rem = addr % PAGE_SIZE;
+    if rem == 0 {
+        addr
+    } else {
+        addr + (PAGE_SIZE - rem)
+    }
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct DtbRef(*const u8);
+
+impl DtbRef {
+    unsafe fn new(ptr: *const u8) -> Self {
+        DtbRef(ptr)
+    }
+
+    fn dev_tree<'a>(&'a self) -> Result<DevTree<'a>, DevTreeError> {
+        unsafe { DevTree::from_raw_pointer(self.0) }
+    }
+
+    pub fn start(&self) -> u64 {
+        self.0 as u64
+    }
+}
+
+pub fn setup_dtb(dtb: DtbRef) -> &'static HwInfo {
     HW_INFO.call_once(|| {
-        let dt: DevTree<'static> = match unsafe { DevTree::from_raw_pointer(dtb) } {
+        let dt = match dtb.dev_tree() {
             Ok(dt) => dt,
             Err(err) => {
                 panic!("Error parsing Device Tree: {}", err);
             }
         };
 
-        let ph = PhysicalAddressRange {
-            kind: PhysicalAddressKind::Reserved,
-            start: dtb as u64,
-            end: (dtb as u64) + dt.totalsize() as u64
-        };
-
-        let hwinfo = match walk_dtb(dt,ph) {
+        let hwinfo = match walk_dtb(dt) {
             Ok(hwinfo) => hwinfo,
             Err(err) => {
                 panic!("Error parsing Device Tree: {}", err);
@@ -268,7 +409,7 @@ pub fn setup_dtb(dtb: *const u8) -> &'static HwInfo {
     })
 }
 
-fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyhow::Result<HwInfo> {
+fn walk_dtb<'a>(tree: DevTree<'a>) -> anyhow::Result<HwInfo> {
     let index_layout = DevTreeIndex::get_layout(&tree).map_err(Error::msg)?;
 
     let mut index_buffer = alloc::vec![0u8; index_layout.size()];
@@ -277,15 +418,13 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
     let index = DevTreeIndex::new(tree, slice).map_err(Error::msg)?;
 
     let mut hwinfo = HwInfoBuilder::default();
-    hwinfo.tree(DebugHide(tree));
-    hwinfo.tree_range(tree_address);
 
     for node in index.compatible_nodes("riscv") {
         let mut hart = HartBuilder::default();
         let mut is_cpu = false;
 
         if let Ok(name) = node.name() {
-            hart.name(name);
+            hart.name(name.into());
         } else {
             continue;
         };
@@ -339,7 +478,7 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
         let mut uart = UartNS16550aBuilder::default();
 
         if let Ok(name) = node.name() {
-            uart.name(name);
+            uart.name(name.into());
         } else {
             continue;
         };
@@ -358,11 +497,11 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
                 }
                 Ok("reg") => {
                     if let (Ok(base), Ok(len)) = (prop.u64(0), prop.u64(1)) {
-                        uart.reg(PhysicalAddressRange {
-                            kind: PhysicalAddressKind::Mmio,
-                            start: base,
-                            end: base + len,
-                        });
+                        uart.reg(PhysicalAddressRange::new(
+                            base..base + len,
+                            PhysicalAddressKind::Mmio,
+                            "uart",
+                        ));
                     }
                 }
                 Ok("clock-frequency") => {
@@ -383,7 +522,7 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
     for node in index.compatible_nodes("sifive,plic-1.0.0") {
         let mut plic = PlicBuilder::default();
         if let Ok(name) = node.name() {
-            plic.name(name);
+            plic.name(name.into());
         } else {
             continue;
         };
@@ -400,11 +539,11 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
                 }
                 Ok("reg") => {
                     if let (Ok(base), Ok(len)) = (prop.u64(0), prop.u64(1)) {
-                        let reg = PhysicalAddressRange {
-                            kind: PhysicalAddressKind::Mmio,
-                            start: base,
-                            end: base + len,
-                        };
+                        let reg = PhysicalAddressRange::new(
+                            base..(base + len),
+                            PhysicalAddressKind::Mmio,
+                            "plic",
+                        );
                         plic.reg(reg);
                     }
                 }
@@ -424,7 +563,7 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
     for node in index.compatible_nodes("sifive,clint0") {
         let mut clint = ClintBuilder::default();
         let name = node.name().expect("clint node does not have name");
-        clint.name(name);
+        clint.name(name.into());
 
         for prop in node.props() {
             match prop.name().expect("clint node failed get prop name") {
@@ -434,17 +573,11 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
                     let base = prop
                         .u64(0)
                         .unwrap_or_else(|err| panic!("failed to read {name}/reg[0] as u64: {err}"));
-
                     let len = prop
                         .u64(1)
                         .unwrap_or_else(|err| panic!("failed to read {name}/reg[1] as u64: {err}"));
-                    clint.reg(PhysicalAddressRange {
-                        kind,
-                        start: base,
-                        end: base + len,
-                    });
+                    clint.reg(PhysicalAddressRange::new(base..(base + len), kind, "clint"));
                 }
-
                 "interrupts-extended" => {
                     clint.contexts(parse_interrupt_extended(prop, &hwinfo));
                 }
@@ -458,7 +591,7 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
     for node in index.compatible_nodes("google,goldfish-rtc") {
         let mut rtc = RtcBuilder::default();
 
-        rtc.name(node.name().expect("rtc: node has no name"));
+        rtc.name(node.name().expect("rtc: node has no name").into());
 
         for prop in node.props() {
             match prop.name().expect("rtc: prop has no name") {
@@ -477,11 +610,11 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
                 "reg" => {
                     let reg_base = prop.u64(0).expect("rtc: error getting reg[0]");
                     let reg_len = prop.u64(1).expect("rtc: error getting reg[1]");
-                    rtc.reg(PhysicalAddressRange {
-                        kind: PhysicalAddressKind::Mmio,
-                        start: reg_base,
-                        end: reg_base + reg_len,
-                    });
+                    rtc.reg(PhysicalAddressRange::new(
+                        reg_base..(reg_base + reg_len),
+                        PhysicalAddressKind::Mmio,
+                        "rtc",
+                    ));
                 }
                 _ => {}
             }
@@ -495,11 +628,11 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
                 if let Some(reg) = range.props().find(|p| p.name() == Ok("reg")) {
                     let base = reg.u64(0).unwrap();
                     let len = reg.u64(1).unwrap();
-                    hwinfo.add_reserved_memory(PhysicalAddressRange {
-                        kind: PhysicalAddressKind::Reserved,
-                        start: base,
-                        end: base + len,
-                    });
+                    hwinfo.add_reserved_memory(PhysicalAddressRange::new(
+                        base..(base + len),
+                        PhysicalAddressKind::Reserved,
+                        "reserved-memory",
+                    ));
                     // Only prop we need or expect to find.
                     break;
                 }
@@ -511,6 +644,7 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
         let mut is_ram = false;
         let mut reg = None;
         for prop in node.props() {
+            let name = node.name().unwrap();
             match prop.name() {
                 Ok("device_type") => {
                     if prop.str() == Ok("memory") {
@@ -519,11 +653,11 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
                 }
                 Ok("reg") => {
                     if let (Ok(base), Ok(len)) = (prop.u64(0), prop.u64(1)) {
-                        reg = Some(PhysicalAddressRange {
-                            kind: PhysicalAddressKind::Usable,
-                            start: base,
-                            end: base + len,
-                        })
+                        reg = Some(PhysicalAddressRange::new(
+                            base..(base + len),
+                            PhysicalAddressKind::Usable,
+                             "",
+                        ));
                     }
                 }
                 Ok("timebase-frequency") => {
@@ -538,7 +672,9 @@ fn walk_dtb(tree: DevTree<'static>, tree_address: PhysicalAddressRange) -> anyho
         }
 
         if is_ram && reg.is_some() {
-            hwinfo.add_memory(reg.unwrap());
+            let mut reg = reg.unwrap();
+            reg.description = "RAM";
+            hwinfo.add_memory(reg);
         }
     }
 
@@ -580,75 +716,6 @@ fn parse_interrupt_extended<'a>(
     result
 }
 
-pub trait MmioRegions {
-    type Iter: Iterator<Item = PhysicalAddressRange>;
-    fn get_mmio_regions(&self) -> Self::Iter;
-}
-
-impl MmioRegions for Plic {
-    type Iter = core::iter::Once<PhysicalAddressRange>;
-
-    fn get_mmio_regions(&self) -> Self::Iter {
-        core::iter::once(self.reg)
-    }
-}
-
-impl MmioRegions for UartNS16550a {
-    type Iter = core::iter::Once<PhysicalAddressRange>;
-
-    fn get_mmio_regions(&self) -> Self::Iter {
-        core::iter::once(self.reg)
-    }
-}
-
-impl MmioRegions for Rtc {
-    type Iter = core::iter::Once<PhysicalAddressRange>;
-
-    fn get_mmio_regions(&self) -> Self::Iter {
-        core::iter::once(self.reg)
-    }
-}
-
-impl MmioRegions for HwInfo {
-    type Iter = impl Iterator<Item = PhysicalAddressRange>;
-
-    fn get_mmio_regions(&self) -> Self::Iter {
-        self.rtc
-            .get_mmio_regions()
-            .chain(self.plic.get_mmio_regions())
-            .chain(self.uart.get_mmio_regions())
-    }
-}
-
-pub trait ReservedRegions {
-    type Iter: Iterator<Item = PhysicalAddressRange>;
-
-    // This is static because I couldn't figure out how to specify the lifetime the right way.
-    fn get_reserved_regions(&'static self) -> Self::Iter;
-}
-
-impl ReservedRegions for HwInfo {
-    type Iter = impl Iterator<Item = PhysicalAddressRange>;
-
-    fn get_reserved_regions(&'static self) -> Self::Iter {
-        self.reserved_memory.iter().map(|r| *r)
-    }
-}
-
-pub trait MemoryRegions {
-    type Iter: Iterator<Item = PhysicalAddressRange>;
-
-    fn get_memory_regions(&'static self) -> Self::Iter;
-}
-
-impl MemoryRegions for HwInfo {
-    type Iter = impl Iterator<Item = PhysicalAddressRange>;
-
-    fn get_memory_regions(&'static self) -> Self::Iter {
-        self.ram.iter().map(|r| *r)
-    }
-}
-
 pub struct MemoryLayout {
     pub executable_memory: PhysicalAddressRange,
     pub read_only_memory: PhysicalAddressRange,
@@ -656,26 +723,58 @@ pub struct MemoryLayout {
     pub mmio: Vec<PhysicalAddressRange>,
     pub reserved_memory: Vec<PhysicalAddressRange>,
     pub tree_memory: PhysicalAddressRange,
-    pub unused_memory: Vec<PhysicalAddressRange>,    
+    pub unused_memory: Vec<PhysicalAddressRange>,
 }
 
 impl HwInfo {
-    fn memory_layout(&self) -> MemoryLayout {
-        let image = image();
-        
-        MemoryLayout {
-            executable_memory: PhysicalAddressRange::new(text(), PhysicalAddressKind::OsImage),
-            read_only_memory: PhysicalAddressRange::new(rodata(), PhysicalAddressKind::OsImage),
-            mutable_memory: PhysicalAddressRange::new(bss(), PhysicalAddressKind::Usable),
-            mmio: vec![self.uart.reg, self.plic.reg, self.rtc.reg],
-            reserved_memory: self.reserved_memory.clone(),
-            tree_memory: self.tree_range,
-            unused_memory: [PhysicalAddressRange {
-                kind: PhysicalAddressKind::Usable,
-                start: image.end,
-                end: self.ram[0].end,
-            }]
-            .into(),
+    pub fn memory_layout(&self) -> Vec<PhysicalAddressRange> {
+        let mut layout = vec![];
+        layout.push(PhysicalAddressRange::new(
+            text(),
+            PhysicalAddressKind::Executable,
+            ".text",
+        ));
+        layout.push(PhysicalAddressRange::new(
+            rodata(),
+            PhysicalAddressKind::ReadOnly,
+            ".rodata",
+        ));
+        layout.push(PhysicalAddressRange::new(
+            data(),
+            PhysicalAddressKind::Writable,
+            ".data",
+        ));
+        layout.push(PhysicalAddressRange::new(
+            bss(),
+            PhysicalAddressKind::Writable,
+            ".bss",
+        ));
+        layout.push(self.uart.reg.clone());
+        layout.push(self.plic.reg.clone());
+        layout.push(self.rtc.reg.clone());
+        for rm in self.reserved_memory.iter() {
+            layout.push(rm.clone());
         }
+
+        layout.push(basic_allocator::heap_range());
+        // layout.push(self.tree_range);
+        /*
+        let spare_start = if self.tree_range.end % 4096 == 0 {
+            self.tree_range.end
+        } else {
+            self.tree_range.end.next_multiple_of(4096)
+        };
+
+        layout.push(PhysicalAddressRange::new(
+            spare_start..(self.ram[0].end),
+            PhysicalAddressKind::Writable,
+            "spare",
+        ));
+*/
+        layout.sort_by_key(|range| range.start);
+        for r in layout.windows(2) {
+            assert!(r[0].end <= r[1].start, "{} does not finish before {}", r[0].description, r[1].description);
+        }
+        layout
     }
 }
