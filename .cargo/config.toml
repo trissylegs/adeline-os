@@ -1,5 +1,5 @@
 [target.riscv64gc-unknown-none-elf]
-runner = "qemu-system-riscv64 -nographic -machine virt -m 512M -smp 4 -serial mon:stdio -d int -D log.txt -bios ../opensbi/build/platform/generic/firmware/fw_jump.elf -kernel"
+runner = "qemu-system-riscv64 -nographic -machine virt -m 1G -smp 4 -serial mon:stdio -d int -D log.txt -bios ../opensbi/build/platform/generic/firmware/fw_jump.elf -kernel"
 rustflags = [
   "-C", "link-arg=-Tlinker.ld", "-C", "link-arg=-nostartfiles",
 ]
