@@ -1,8 +1,7 @@
-use core::{hash::Hash, iter::from_fn, default};
+use core::{hash::Hash, iter::from_fn, fmt::{Display, Formatter}};
 
 use crate::{
     basic_consts::*,
-    hwinfo::{BigPage, HwInfo, PageLevel},
     prelude::*,
 };
 
@@ -11,14 +10,26 @@ use const_default::ConstDefault;
 use riscv::register::{self, satp::Mode};
 use smallvec::SmallVec;
 
-// 64-bit modes only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PageTableType {
-    Sv39, Sv48, Sv57
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirtualAddress(pub u64);
+impl VirtualAddress {
+    fn page_offset(self) -> u64 {
+        self.0 & VirtualAddressMask::PAGE_OFFSET.bits()
+    }
+    pub fn vpn_0(self) -> u64 {
+        (self.0 & VirtualAddressMask::VPN_0.bits()) >> 12
+    }
+    pub fn vpn_1(self) -> u64 {
+        (self.0 & VirtualAddressMask::VPN_1.bits()) >> 21
+    }
+    pub fn vpn_2(self) -> u64 {
+        (self.0 & VirtualAddressMask::VPN_2.bits()) >> 30
+    }
+    pub fn vpn_3(self) -> u64 {
+        (self.0 & VirtualAddressMask::VPN_3.bits()) >> 39
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalAddress(pub u64);
 
@@ -31,6 +42,24 @@ impl PhysicalAddress {
     /// Physical page (or frame) number.
     pub const fn ppn(self) -> u64 {
         (self.0 & BITS_55 & !BITS_12) >> 12
+    }
+}
+
+impl PhysicalAddress {
+    pub fn page_offset(self) -> u64 {
+        self.0 & PhysicalAddressMask::PAGE_OFFSET.bits()
+    }
+    pub fn ppn_0(self) -> u64 {
+        (self.0 & PhysicalAddressMask::PPN_0.bits()) >> 12
+    }
+    pub fn ppn_1(self) -> u64 {
+        (self.0 & PhysicalAddressMask::PPN_1.bits()) >> 21
+    }
+    pub fn ppn_2(self) -> u64 {
+        (self.0 & PhysicalAddressMask::PPN_2.bits()) >> 30
+    }
+    pub fn ppn_3(self) -> u64 {
+        (self.0 & PhysicalAddressMask::PPN_3.bits()) >> 39
     }
 }
 
@@ -131,7 +160,7 @@ pub enum EntryKind<'a> {
 
 fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
     let mut todo: SmallVec<[&PageTable; 3]> = SmallVec::new();
-    let mut level = PageLevel::Level2;
+    let mut level = PageLevel::Level1;
     let mut index = 0;
     todo.push(pt);
     from_fn(move || {
@@ -139,6 +168,8 @@ fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
             let current = *todo.last().unwrap();
             while index < 512 {
                 let entry = current.entries[index];
+                let addr = entry.address();
+                // UNSAFELY Assuming Identity map.
 
 
             }
@@ -174,19 +205,13 @@ pub fn place_dump_map(map: &mut PageTable) {
     }
 }
 
-pub fn from_hwinfo(hwinfo: &HwInfo) -> Box<PageTable> {
-    let range = hwinfo.memory_layout();
-    for range in range {}
-
-    todo!()
-}
-
 bitflags! {
     struct VirtualAddressMask : u64 {
         const PAGE_OFFSET = BITS_12;
         const VPN_0 = BITS_9 << 12;
         const VPN_1 = BITS_9 << 21;
         const VPN_2 = BITS_9 << 30;
+        const VPN_3 = BITS_9 << 39;
     }
 }
 
@@ -195,7 +220,8 @@ bitflags! {
         const PAGE_OFFSET = BITS_12;
         const PPN_0 = BITS_9 << 12;
         const PPN_1 = BITS_9 << 21;
-        const PPN_2 = BITS_26 << 30;
+        const PPN_2 = BITS_9 << 30;
+        const PPN_3 = BITS_17 << 39;
     }
 }
 
@@ -361,32 +387,107 @@ impl EntryBuilder {
     }
 }
 
-impl VirtualAddress {
-    fn page_offset(self) -> u64 {
-        self.0 & VirtualAddressMask::PAGE_OFFSET.bits()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum PageLevel {
+    Level0,
+    Level1,
+    Level2,
+}
+
+impl PageLevel {
+    pub const fn up(self) -> Option<PageLevel> {
+        match self {
+            PageLevel::Level0 => Some(PageLevel::Level1),
+            PageLevel::Level1 => Some(PageLevel::Level2),
+            PageLevel::Level2 => None,
+        }
     }
-    pub fn vpn_0(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_0.bits()) >> 12
-    }
-    pub fn vpn_1(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_1.bits()) >> 21
-    }
-    pub fn vpn_2(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_2.bits()) >> 30
+
+    pub const fn down(self) -> Option<PageLevel> {
+        match self {
+            PageLevel::Level0 => None,
+            PageLevel::Level1 => Some(PageLevel::Level0),
+            PageLevel::Level2 => Some(PageLevel::Level1),
+        }
     }
 }
 
-impl PhysicalAddress {
-    pub fn page_offset(self) -> u64 {
-        self.0 & PhysicalAddressMask::PAGE_OFFSET.bits()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BigPage {
+    Page(u64),
+    MegaPage(u64),
+    GigaPage(u64),
+    // TeraPage(u64),
+    // PetaPage(u64),
+}
+
+impl Display for BigPage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BigPage::Page(pos) => write!(f, "Page@{:x}", pos),
+            BigPage::MegaPage(pos) => write!(f, "MegaPage@{:x}", pos),
+            BigPage::GigaPage(pos) => write!(f, "GigaPage@{:x}", pos),
+        }
     }
-    pub fn ppn_0(self) -> u64 {
-        (self.0 & PhysicalAddressMask::PPN_0.bits()) >> 12
+}
+
+pub const PAGE_LEVELS: [(PageLevel, u64); 2] = [
+    (BigPage::Page(0).level(), BigPage::Page(0).size()),
+    (BigPage::MegaPage(0).level(), BigPage::MegaPage(0).size()),
+];
+
+
+impl BigPage {
+    pub const fn new(level: PageLevel, address: PhysicalAddress) -> BigPage {
+        match level {
+            PageLevel::Level0 => BigPage::Page(address.0),
+            PageLevel::Level1 => BigPage::MegaPage(address.0),
+            PageLevel::Level2 => BigPage::GigaPage(address.0),
+        }
     }
-    pub fn ppn_1(self) -> u64 {
-        (self.0 & PhysicalAddressMask::PPN_1.bits()) >> 21
+
+    pub const fn level(self) -> PageLevel {
+        match self {
+            BigPage::Page(_) => PageLevel::Level0,
+            BigPage::MegaPage(_) => PageLevel::Level1,
+            BigPage::GigaPage(_) => PageLevel::Level2,
+        }
     }
-    pub fn ppn_2(self) -> u64 {
-        (self.0 & PhysicalAddressMask::PPN_2.bits()) >> 30
+
+    pub const fn size(self) -> u64 {
+        match self {
+            BigPage::Page(_) => PAGE_SIZE,
+            BigPage::MegaPage(_) => MEGA_PAGE_SIZE,
+            BigPage::GigaPage(_) => GIGA_PAGE_SIZE,
+        }
+    }
+
+    pub const fn position(self) -> u64 {
+        match self {
+            BigPage::Page(n)
+            | BigPage::MegaPage(n)
+            | BigPage::GigaPage(n)
+            => n,
+        }
+    }
+
+
+    pub fn page_for(position: u64, at_most: u64) -> BigPage {
+        for (level, size) in PAGE_LEVELS.iter().rev() {
+            if at_most >= *size && (position & (size - 1) == 0) {
+                match level {
+                    PageLevel::Level0 => return BigPage::Page(position),
+                    PageLevel::Level1 => return BigPage::MegaPage(position),
+                    PageLevel::Level2 => return BigPage::GigaPage(position),
+                    // PageLevel::Level3 => return BigPage::TeraPage(position),
+                    // PageLevel::Level4 => return BigPage::PetaPage(position),
+                }
+            }
+        }
+        panic!(
+            "Invalid page spec: position: {:x}, at_most: {:x}",
+            position, at_most
+        );
     }
 }

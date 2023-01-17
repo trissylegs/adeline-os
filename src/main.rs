@@ -51,7 +51,6 @@ use riscv::register::{
 use spin::Mutex;
 
 use crate::{
-    hwinfo::{BigPage},
     isr::plic,
     prelude::*,
     sbi::{
@@ -59,7 +58,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer, __image_end}, pagetable::place_dump_map,
+    linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer, __image_end}, pagetable::{place_dump_map, BigPage},
 };
 
 #[repr(align(4096))]
@@ -206,7 +205,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
         println!("{:?}", mr);
 
         let mut level_start = BigPage::Page(0);
-        let mut prev_level = hwinfo::PageLevel::Level0;
+        let mut prev_level = pagetable::PageLevel::Level0;
         let mut level_count = 0;
 
         for p in mr.big_pages() {

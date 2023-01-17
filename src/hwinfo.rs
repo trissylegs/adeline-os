@@ -1,5 +1,5 @@
 use core::{
-    fmt::{Debug, Formatter, Display},
+    fmt::{Debug, Formatter},
     mem::size_of,
     ops::{Range},
     str,
@@ -14,7 +14,7 @@ use crate::{
     basic_allocator,
     isr::plic::InterruptId,
     linker_info::{bss, data, rodata, text},
-    pagetable::{GIGA_PAGE_SIZE, MEGA_PAGE_SIZE, PAGE_SIZE, PETA_PAGE_SIZE, TERA_PAGE_SIZE, PhysicalAddress},
+    pagetable::{PAGE_SIZE, BigPage},
     prelude::*,
     sbi::{
         hart::HartId,
@@ -69,7 +69,7 @@ impl PhysicalAddressRange {
 
             let remaining = end - next;
 
-            let page = BigPage::page_level_for(next, remaining);
+            let page = BigPage::page_for(next, remaining);
             current += page.size();
             return Some(page);
         })
@@ -86,129 +86,6 @@ impl Debug for PhysicalAddressRange {
                 &format_args!("0x{:08x}..0x{:08x}", self.start, self.end),
             )
             .finish()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum PageLevel {
-    Level0,
-    Level1,
-    Level2,
-    Level3,
-    Level4,
-}
-
-impl PageLevel {
-    pub const fn up(self) -> Option<PageLevel> {
-        match self {
-            PageLevel::Level0 => Some(PageLevel::Level1),
-            PageLevel::Level1 => Some(PageLevel::Level2),
-            PageLevel::Level2 => Some(PageLevel::Level3),
-            PageLevel::Level3 => Some(PageLevel::Level4),
-            PageLevel::Level4 => None,
-        }
-    }
-
-    pub const fn down(self) -> Option<PageLevel> {
-        match self {
-            PageLevel::Level0 => None,
-            PageLevel::Level1 => Some(PageLevel::Level0),
-            PageLevel::Level2 => Some(PageLevel::Level1),
-            PageLevel::Level3 => Some(PageLevel::Level2),
-            PageLevel::Level4 => Some(PageLevel::Level3),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BigPage {
-    Page(u64),
-    MegaPage(u64),
-    GigaPage(u64),
-    TeraPage(u64),
-    PetaPage(u64),
-}
-
-impl Display for BigPage {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self {
-            BigPage::Page(pos) => write!(f, "Page@{:x}", pos),
-            BigPage::MegaPage(pos) => write!(f, "MegaPage@{:x}", pos),
-            BigPage::GigaPage(pos) => write!(f, "GigaPage@{:x}", pos),
-            BigPage::TeraPage(pos) => write!(f, "TeraPage@{:x}", pos),
-            BigPage::PetaPage(pos) => write!(f, "PetaPage@{:x}", pos),
-        }
-    }
-}
-
-pub const PAGE_LEVELS: [(PageLevel, u64); 5] = [
-    (BigPage::Page(0).level(), BigPage::Page(0).size()),
-    (BigPage::MegaPage(0).level(), BigPage::MegaPage(0).size()),
-    (BigPage::GigaPage(0).level(), BigPage::GigaPage(0).size()),
-    (BigPage::TeraPage(0).level(), BigPage::TeraPage(0).size()),
-    (BigPage::PetaPage(0).level(), BigPage::PetaPage(0).size()),
-];
-
-
-impl BigPage {
-    pub const fn new(level: PageLevel, address: PhysicalAddress) -> BigPage {
-        match level {
-            PageLevel::Level0 => BigPage::Page(address.0),
-            PageLevel::Level1 => BigPage::MegaPage(address.0),
-            PageLevel::Level2 => BigPage::GigaPage(address.0),
-            PageLevel::Level3 => BigPage::TeraPage(address.0),
-            PageLevel::Level4 => BigPage::PetaPage(address.0),
-        }
-    }
-
-    pub const fn level(self) -> PageLevel {
-        match self {
-            BigPage::Page(_) => PageLevel::Level0,
-            BigPage::MegaPage(_) => PageLevel::Level1,
-            BigPage::GigaPage(_) => PageLevel::Level2,
-            BigPage::TeraPage(_) => PageLevel::Level3,
-            BigPage::PetaPage(_) => PageLevel::Level4,
-        }
-    }
-
-    pub const fn size(self) -> u64 {
-        match self {
-            BigPage::Page(_) => PAGE_SIZE,
-            BigPage::MegaPage(_) => MEGA_PAGE_SIZE,
-            BigPage::GigaPage(_) => GIGA_PAGE_SIZE,
-            BigPage::TeraPage(_) => TERA_PAGE_SIZE,
-            BigPage::PetaPage(_) => PETA_PAGE_SIZE,
-        }
-    }
-
-    pub const fn position(self) -> u64 {
-        match self {
-            BigPage::Page(n)
-            | BigPage::MegaPage(n)
-            | BigPage::GigaPage(n)
-            | BigPage::TeraPage(n)
-            | BigPage::PetaPage(n) => n,
-        }
-    }
-
-
-    fn page_level_for(position: u64, at_most: u64) -> BigPage {
-        for (level, size) in PAGE_LEVELS.iter().rev() {
-            if at_most >= *size && (position & (size - 1) == 0) {
-                match level {
-                    PageLevel::Level0 => return BigPage::Page(position),
-                    PageLevel::Level1 => return BigPage::MegaPage(position),
-                    PageLevel::Level2 => return BigPage::GigaPage(position),
-                    PageLevel::Level3 => return BigPage::TeraPage(position),
-                    PageLevel::Level4 => return BigPage::PetaPage(position),
-                }
-            }
-        }
-        panic!(
-            "Invalid page spec: position: {:x}, at_most: {:x}",
-            position, at_most
-        );
     }
 }
 
