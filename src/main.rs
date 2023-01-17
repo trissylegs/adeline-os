@@ -51,7 +51,7 @@ use riscv::register::{
 use spin::Mutex;
 
 use crate::{
-    hwinfo::{BigPages},
+    hwinfo::{BigPage},
     isr::plic,
     prelude::*,
     sbi::{
@@ -59,7 +59,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer, __image_end}, pagetable::dumb_map,
+    linker_info::{__bss_start, __stack_limit, __stack_top, __global_pointer, __image_end}, pagetable::place_dump_map,
 };
 
 #[repr(align(4096))]
@@ -187,7 +187,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
 
     {
         let mut pt = WIP_PAGETABLE.lock();
-        *pt = dumb_map();
+        place_dump_map(&mut *pt);
         println!("{:?}", *pt);
 
         let root_addr = (&*pt) as *const PageTable as u64;
@@ -205,8 +205,8 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
     for mr in hwinfo.memory_layout() {
         println!("{:?}", mr);
 
-        let mut level_start = BigPages::Page(0);
-        let mut prev_level = 99;
+        let mut level_start = BigPage::Page(0);
+        let mut prev_level = hwinfo::PageLevel::Level0;
         let mut level_count = 0;
 
         for p in mr.big_pages() {

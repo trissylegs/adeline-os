@@ -1,14 +1,21 @@
-use core::hash::Hash;
+use core::{hash::Hash, iter::from_fn, default};
 
 use crate::{
     basic_consts::*,
+    hwinfo::{BigPage, HwInfo, PageLevel},
     prelude::*,
-    hwinfo::HwInfo,
 };
 
 use bitflags::bitflags;
 use const_default::ConstDefault;
 use riscv::register::{self, satp::Mode};
+use smallvec::SmallVec;
+
+// 64-bit modes only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PageTableType {
+    Sv39, Sv48, Sv57
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirtualAddress(pub u64);
@@ -16,10 +23,12 @@ pub struct VirtualAddress(pub u64);
 pub struct PhysicalAddress(pub u64);
 
 impl PhysicalAddress {
-    pub const fn offset(self) -> u64 {
+    /// Offset within the current physical page (frame)
+    pub const fn offset_in_ppn(self) -> u64 {
         self.0 & BITS_12
     }
 
+    /// Physical page (or frame) number.
     pub const fn ppn(self) -> u64 {
         (self.0 & BITS_55 & !BITS_12) >> 12
     }
@@ -81,10 +90,63 @@ pub fn print_current_page_table() {
     }
 }
 
+pub const PAGE_ENTRIES: usize = 512;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[repr(C, align(4096))]
 pub struct PageTable {
-    entries: [Entry; 512],
+    entries: [Entry; PAGE_ENTRIES],
+}
+
+pub struct PageTableRef<'a> {
+    /// Reference to page table.
+    table: &'a PageTable,
+    /// Level in page table. 0 is the leaf and refer to 4k pages. 3 is the highest in sv48.
+    level: PageLevel,
+    /// Virtual address offset.
+    offset: VirtualAddress,
+}
+
+impl<'a> PageTableRef<'a> {
+    pub fn get_entry(&self, index: usize) -> EntryKind<'a> {
+        let entry = self.table.entries[index];
+        if !entry.valid() {
+            EntryKind::Empty
+        } else if entry.permissions().is_none() {
+            todo!()
+        } else {
+            let addr = entry.address();
+            let page = BigPage::new(self.level, addr);
+            EntryKind::Present(page)
+        }
+    }
+}
+
+pub enum EntryKind<'a> {
+    Empty,
+    Present(BigPage),
+    ChildTable(u64),
+    _ChildTable(PageTableRef<'a>)
+}
+
+fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
+    let mut todo: SmallVec<[&PageTable; 3]> = SmallVec::new();
+    let mut level = PageLevel::Level2;
+    let mut index = 0;
+    todo.push(pt);
+    from_fn(move || {
+        while !todo.is_empty() {
+            let current = *todo.last().unwrap();
+            while index < 512 {
+                let entry = current.entries[index];
+
+
+            }
+            todo.pop();
+            level = level.up().unwrap();
+        }
+        None
+    })
 }
 
 impl ConstDefault for PageTable {
@@ -99,10 +161,10 @@ pub const GIGA_PAGE_SIZE: u64 = 0x40000000;
 pub const TERA_PAGE_SIZE: u64 = 0x2000000000000;
 pub const PETA_PAGE_SIZE: u64 = 0x400000000000000;
 
-pub fn dumb_map() -> PageTable {
-    let mut pt = PageTable::DEFAULT;
+pub fn place_dump_map(map: &mut PageTable) {
+    *map = PageTable::DEFAULT;
     for i in 0..4 {
-        pt.entries[i] = Entry::builder()
+        map.entries[i] = Entry::builder()
             .for_offset((i * 0x40000000) as u64)
             .valid(true)
             .readable(true)
@@ -110,14 +172,11 @@ pub fn dumb_map() -> PageTable {
             .executable(true)
             .build();
     }
-    pt
 }
 
-pub fn from_hwinfo(_hwinfo: &HwInfo) -> PageTable {
-    let range = _hwinfo.memory_layout();
-    for range in range {
-
-    }
+pub fn from_hwinfo(hwinfo: &HwInfo) -> Box<PageTable> {
+    let range = hwinfo.memory_layout();
+    for range in range {}
 
     todo!()
 }
@@ -171,6 +230,9 @@ bitflags! {
         const PBMT  = BITS_2 << 61;
         #[doc = "Use for NAPOT entries. Specified by Svnapot"]
         const N     = 1 << 63;
+
+        const FLAGS = Self::V.bits | Self::R.bits | Self::W.bits | Self::X.bits | Self::U.bits | Self::G.bits | Self::A.bits | Self::A.bits | Self::D.bits;
+        const PPN = Self::PPN_0.bits | Self::PPN_1.bits | Self::PPN_2.bits;
     }
 }
 
@@ -180,80 +242,10 @@ impl Entry {
             entry: Entry::empty(),
         }
     }
-}
 
-pub struct EntryBuilder {
-    entry: Entry,
-}
-
-impl EntryBuilder {
-    pub fn for_offset(mut self, offset: u64) -> Self {
-        let pa = PhysicalAddress(offset);
-        self.entry.remove(Entry::PPN_0);
-        self.entry.remove(Entry::PPN_1);
-        self.entry.remove(Entry::PPN_2);
-        self.entry &= Entry::from_bits(pa.ppn_0() << 10).unwrap();
-        self.entry &= Entry::from_bits(pa.ppn_1() << 19).unwrap();
-        self.entry &= Entry::from_bits(pa.ppn_2() << 28).unwrap();
-        self
+    pub fn just_flags(&self) -> Entry {
+        *self & Self::FLAGS
     }
-
-    pub fn valid(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::V, preset);
-        self
-    }
-    pub fn readable(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::R, preset);
-        self
-    }
-    pub fn writable(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::W, preset);
-        self
-    }
-    pub fn executable(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::X, preset);
-        self
-    }
-    pub fn build(self) -> Entry {
-        self.entry
-    }
-}
-
-impl ConstDefault for Entry {
-    const DEFAULT: Self = Entry::empty();
-}
-
-impl VirtualAddress {
-    fn page_offset(self) -> u64 {
-        self.0 & VirtualAddressMask::PAGE_OFFSET.bits()
-    }
-    pub fn vpn_0(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_0.bits()) >> 12
-    }
-    pub fn vpn_1(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_1.bits()) >> 21
-    }
-    pub fn vpn_2(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_2.bits()) >> 30
-    }
-}
-
-impl PhysicalAddress {
-    pub fn page_offset(self) -> u64 {
-        self.0 & PhysicalAddressMask::PAGE_OFFSET.bits()
-    }
-    pub fn ppn_0(self) -> u64 {
-        (self.0 & PhysicalAddressMask::PPN_0.bits()) >> 12
-    }
-    pub fn ppn_1(self) -> u64 {
-        (self.0 & PhysicalAddressMask::PPN_1.bits()) >> 21
-    }
-    pub fn ppn_2(self) -> u64 {
-        (self.0 & PhysicalAddressMask::PPN_2.bits()) >> 30
-    }
-}
-
-impl Entry {
     pub fn ppn_0(self) -> u64 {
         (self & Self::PPN_0).bits() >> 10
     }
@@ -263,9 +255,11 @@ impl Entry {
     pub fn ppn_2(self) -> u64 {
         (self & Self::PPN_2).bits() >> 28
     }
-}
 
-impl Entry {
+    pub fn address(self) -> PhysicalAddress {
+        PhysicalAddress((self & Self::PPN).bits())
+    }
+
     pub fn rsw(self) -> Rsw {
         match (self & Self::RSW).bits() >> 8 {
             0 => Rsw::Rsw0,
@@ -315,5 +309,84 @@ impl Entry {
 
     pub fn dirty(self) -> bool {
         (self & Self::D).is_empty()
+    }
+}
+
+impl Default for Entry {
+    fn default() -> Self {
+        Self {
+            bits: Default::default(),
+        }
+    }
+}
+
+impl ConstDefault for Entry {
+    const DEFAULT: Self = Entry::empty();
+}
+
+pub struct EntryBuilder {
+    entry: Entry,
+}
+
+impl EntryBuilder {
+    pub fn for_offset(mut self, offset: u64) -> Self {
+        let pa = PhysicalAddress(offset);
+        self.entry.remove(Entry::PPN_0);
+        self.entry.remove(Entry::PPN_1);
+        self.entry.remove(Entry::PPN_2);
+        self.entry &= Entry::from_bits(pa.ppn_0() << 10).unwrap();
+        self.entry &= Entry::from_bits(pa.ppn_1() << 19).unwrap();
+        self.entry &= Entry::from_bits(pa.ppn_2() << 28).unwrap();
+        self
+    }
+
+    pub fn valid(mut self, preset: bool) -> Self {
+        self.entry.set(Entry::V, preset);
+        self
+    }
+    pub fn readable(mut self, preset: bool) -> Self {
+        self.entry.set(Entry::R, preset);
+        self
+    }
+    pub fn writable(mut self, preset: bool) -> Self {
+        self.entry.set(Entry::W, preset);
+        self
+    }
+    pub fn executable(mut self, preset: bool) -> Self {
+        self.entry.set(Entry::X, preset);
+        self
+    }
+    pub fn build(self) -> Entry {
+        self.entry
+    }
+}
+
+impl VirtualAddress {
+    fn page_offset(self) -> u64 {
+        self.0 & VirtualAddressMask::PAGE_OFFSET.bits()
+    }
+    pub fn vpn_0(self) -> u64 {
+        (self.0 & VirtualAddressMask::VPN_0.bits()) >> 12
+    }
+    pub fn vpn_1(self) -> u64 {
+        (self.0 & VirtualAddressMask::VPN_1.bits()) >> 21
+    }
+    pub fn vpn_2(self) -> u64 {
+        (self.0 & VirtualAddressMask::VPN_2.bits()) >> 30
+    }
+}
+
+impl PhysicalAddress {
+    pub fn page_offset(self) -> u64 {
+        self.0 & PhysicalAddressMask::PAGE_OFFSET.bits()
+    }
+    pub fn ppn_0(self) -> u64 {
+        (self.0 & PhysicalAddressMask::PPN_0.bits()) >> 12
+    }
+    pub fn ppn_1(self) -> u64 {
+        (self.0 & PhysicalAddressMask::PPN_1.bits()) >> 21
+    }
+    pub fn ppn_2(self) -> u64 {
+        (self.0 & PhysicalAddressMask::PPN_2.bits()) >> 30
     }
 }
