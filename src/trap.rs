@@ -1,4 +1,3 @@
-
 use core::fmt::{Debug, Write};
 
 use riscv::register::{
@@ -6,7 +5,7 @@ use riscv::register::{
     sepc, sie, sstatus, stval,
 };
 
-use crate::console::{LockOrDummy, self};
+use crate::console::{self, LockOrDummy};
 use crate::isr::Sip;
 
 /// Registers saved to stack on
@@ -87,9 +86,8 @@ impl Debug for TrapRegisters {
     }
 }
 
-#[no_mangle]
 #[allow(unused_must_use)]
-extern "C" fn trap(registers: &mut TrapRegisters) {
+pub(crate) extern "C" fn trap(registers: &mut TrapRegisters) {
     let sepc = sepc::read();
     let sstatus = sstatus::read();
     let sie_val = sie::read();
