@@ -145,7 +145,7 @@ impl<'a> PageTableRef<'a> {
             todo!()
         } else {
             let addr = entry.address();
-            let page = BigPage::new(self.level, addr);
+            let page = BigPage::new(self.level, addr.0);
             EntryKind::Present(page)
         }
     }
@@ -158,25 +158,40 @@ pub enum EntryKind<'a> {
     _ChildTable(PageTableRef<'a>)
 }
 
-fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
+pub fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
     let mut todo: SmallVec<[&PageTable; 3]> = SmallVec::new();
-    let mut level = PageLevel::Level1;
+    let mut level = PageLevel::Level2;
     let mut index = 0;
     todo.push(pt);
     from_fn(move || {
         while !todo.is_empty() {
             let current = *todo.last().unwrap();
             while index < 512 {
-                let entry = current.entries[index];
+                let curr_index = index;
+                index += 1;
+                let entry = current.entries[curr_index];
+                if !entry.valid() {
+                    continue;
+                }
+
+                if entry.is_leaf() {
+                    let addr = entry.address();
+                    return Some(BigPage::new(level, addr.0));
+                }
+
                 let addr = entry.address();
                 // UNSAFELY Assuming Identity map.
-
-
+                let ptr = addr.0 as *const PageTable;
+                unsafe {
+                    let next = &*ptr;
+                    level = level.down().unwrap();
+                    todo.push(next);
+                }
             }
             todo.pop();
             level = level.up().unwrap();
         }
-        None
+        return None;
     })
 }
 
@@ -310,6 +325,10 @@ impl Entry {
         (self & Self::V).bits() != 0
     }
 
+    pub fn is_leaf(self) -> bool {
+        self.permissions().is_none()
+    }
+
     pub fn permissions(self) -> Permissions {
         let read = (self & Self::R).is_empty();
         let write = (self & Self::W).is_empty();
@@ -439,11 +458,11 @@ pub const PAGE_LEVELS: [(PageLevel, u64); 2] = [
 
 
 impl BigPage {
-    pub const fn new(level: PageLevel, address: PhysicalAddress) -> BigPage {
+    pub const fn new(level: PageLevel, address: u64) -> BigPage {
         match level {
-            PageLevel::Level0 => BigPage::Page(address.0),
-            PageLevel::Level1 => BigPage::MegaPage(address.0),
-            PageLevel::Level2 => BigPage::GigaPage(address.0),
+            PageLevel::Level0 => BigPage::Page(address),
+            PageLevel::Level1 => BigPage::MegaPage(address),
+            PageLevel::Level2 => BigPage::GigaPage(address),
         }
     }
 
