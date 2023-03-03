@@ -74,6 +74,10 @@ impl PhysicalAddressRange {
             return Some(page);
         })
     }
+
+    pub fn as_range(&self) -> Range<u64> {
+        self.start..self.end
+    }
 }
 
 impl Debug for PhysicalAddressRange {
@@ -103,12 +107,6 @@ pub enum PhysicalAddressKind {
     ReadOnly,
     /// Read-write RAM
     Writable,
-}
-
-impl PhysicalAddressRange {
-    fn as_range(&self) -> Range<u64> {
-        self.start..self.end
-    }
 }
 
 #[derive(Debug, Clone, derive_builder::Builder)]

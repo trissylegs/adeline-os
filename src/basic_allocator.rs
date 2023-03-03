@@ -1,4 +1,4 @@
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::fmt::Write;
 use linked_list_allocator::LockedHeap;
 
@@ -8,7 +8,7 @@ use crate::hwinfo::{PhysicalAddressRange, PhysicalAddressKind, HwInfo, DtbRef};
 const BASIC_POOL_SIZE: usize = 1024 * 1024;
 
 // Mutable so it get's linked into the correct section. mut keyword may not actually be necessary.
-#[cfg(feature = "basic_pool")]
+
 static mut BASIC_POOL: BasicPoolMemory = BasicPoolMemory::new();
 static HAS_INIT: AtomicBool = AtomicBool::new(false);
 
@@ -59,7 +59,6 @@ pub(crate) unsafe fn finish_init(hwinfo: &HwInfo) {
     }
 }
 
-#[cfg(feature = "basic_pool")]
 pub(crate) fn init() {
     if HAS_INIT.swap(true, Ordering::Acquire) {
         return;

@@ -56,7 +56,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::__image_end, pagetable::{place_dumb_map, BigPage},
+    linker_info::{__image_end, LinkerInfo}, pagetable::{place_dumb_map, BigPage},
 };
 
 #[repr(align(4096))]
@@ -78,6 +78,12 @@ impl StackGuardPage {
             let byte = self.bytes.get();
             assert_eq!((*byte)[511], 0x3355335533553355, "Stack guard corrupted");
         }
+    }
+
+    pub(crate) fn address(&self) -> core::ops::Range<u64> {
+        let start = self as *const _ as usize as u64;
+        let end = start + 4096;
+        start..end
     }
 }
 
@@ -104,17 +110,22 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
 
     sbi::init();
     unsafe {
+        // Initialize the memory allocatior using space from the end of the kernel image the start of the DTB.
         basic_allocator::init_from_free_space(&mut __image_end as *mut u8 as *mut u8, &dtb);
     }
 
+    let mut memory_regions = pagetable::memory_map::MemoryRegions::new();
+
     let hwinfo = hwinfo::setup_dtb(dtb);
     unsafe {
+        // Add the rest of the memory to the allocator. Wipes out the DTB, which has already been dropped by this point.
         basic_allocator::finish_init(hwinfo);
     }
 
-
+    // Check we didn't overflow the stack yet.
     STACK_GUARD.check();
 
+    // Initialize the Interrupt Controller
     unsafe {
         plic::init(hwinfo);
         plic::set_threshold(plic::Threshold::Enable);
@@ -122,13 +133,22 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
         plic::process_interrupt(hart_id);
     }
 
+    // Initialize UART
     console::init(hwinfo);
+
+    memory_regions.add_inital_memory(hwinfo, LinkerInfo::get());
+    memory_regions.print();
+
+    // Initialize the internal timer
     time::init_time(hwinfo);
+    // Initialize the real time clock
     time::rtc::init(hwinfo);
 
+    // Print the ELF image layout for debugging
     linker_info::print_address_ranges();
     // println!(    "fdt:      {:08x} - {:08x}", hwinfo.tree_range.start, hwinfo.tree_range.end);
 
+    // Check we can read the time.
     let now = Instant::now();
     println!("now = {:?}", now);
 

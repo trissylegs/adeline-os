@@ -1,6 +1,8 @@
 use core::fmt::Write;
 use core::{ffi::c_void, ops::Range};
 
+use spin::Once;
+
 use crate::console;
 
 extern "C" {
@@ -60,13 +62,7 @@ pub fn tbss() -> Range<u64> {
 
 macro_rules! write_address {
     ($w:ident, $var:ident) => {
-        writeln!(
-            $w,
-            "{:30}:   {:>16?}",
-            stringify!($var),
-            &$var as *const u8
-        )
-        .ok();
+        writeln!($w, "{:30}:   {:>16?}", stringify!($var), &$var as *const u8).ok();
     };
 }
 
@@ -99,4 +95,31 @@ pub unsafe fn print_address() {
     write_address!(w, __tdata_end);
     write_address!(w, __tbss_start);
     write_address!(w, __tbss_end);
+}
+
+/// LinkerInfo contains the address ranges of the kernel image. Set using linker script.
+pub struct LinkerInfo {
+    pub image: Range<u64>,
+    pub text: Range<u64>,
+    pub rodata: Range<u64>,
+    pub data: Range<u64>,
+    pub bss: Range<u64>,
+    pub tdata: Range<u64>,
+    pub tbss: Range<u64>,
+}
+
+static LINKER_INFO: Once<LinkerInfo> = Once::INIT;
+
+impl LinkerInfo {
+    pub fn get() -> &'static Self {
+        LINKER_INFO.call_once(|| LinkerInfo {
+            image: image(),
+            text: text(),
+            rodata: rodata(),
+            data: data(),
+            bss: bss(),
+            tdata: tdata(),
+            tbss: tbss(),
+        })
+    }
 }

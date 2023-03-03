@@ -158,6 +158,17 @@ pub struct PageTable {
     entries: [Entry; PAGE_ENTRIES],
 }
 
+impl PageTable {
+    pub fn allocate() -> Box<Self> {
+        Box::new(Self::DEFAULT)
+    }
+
+    pub fn ppn(&self) -> u64 {
+        let addr = self as *const _;
+        addr as usize as u64
+    }
+}
+
 impl Debug for PageTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let mut debug = f.debug_struct("PageTable");
@@ -194,11 +205,7 @@ pub struct PageTableRef<'a> {
     address: u64,
 }
 
-
-
 impl<'a> PageTableRef<'a> {
-
-
     pub fn get_entry(&self, index: usize) -> EntryKind<'a> {
         let entry = self.table.entries[index];
         let flags = entry.flags();
