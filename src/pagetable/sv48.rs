@@ -1,32 +1,63 @@
-use core::{hash::Hash, iter::from_fn, fmt::{Display, Formatter}};
-
-use crate::{
-    basic_consts::*,
-    prelude::*,
+use core::{
+    fmt::{Debug, Display, Formatter},
+    hash::Hash,
+    iter::from_fn,
 };
+
+use crate::{basic_consts::*, prelude::*};
 
 use bitflags::bitflags;
 use const_default::ConstDefault;
 use riscv::register::{self, satp::Mode};
 use smallvec::SmallVec;
 
+pub const PAGE_SIZE: u64 = 0x1000;
+pub const MEGA_PAGE_SIZE: u64 = 0x200000;
+pub const GIGA_PAGE_SIZE: u64 = 0x40000000;
+pub const TERA_PAGE_SIZE: u64 = 0x2000000000000;
+pub const PETA_PAGE_SIZE: u64 = 0x400000000000000;
+
+/// Mask to access or clear offsets within a page.
+const OFFSET_MASK: u64 = BITS_12;
+/// Mask to access bits used to access page number of an address.
+const PAGE_NUMBER_MASK: u64 =
+    EntryFlags::PPN_0.bits | EntryFlags::PPN_1.bits | EntryFlags::PPN_2.bits;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirtualAddress(pub u64);
 impl VirtualAddress {
-    fn page_offset(self) -> u64 {
-        self.0 & VirtualAddressMask::PAGE_OFFSET.bits()
+    const VPN_0_MASK: u64 = BITS_9 << 12;
+    const VPN_1_MASK: u64 = BITS_9 << 21;
+    const VPN_2_MASK: u64 = BITS_9 << 30;
+    const VPN_3_MASK: u64 = BITS_9 << 39;
+    const VPN_MASK: u64 = Self::VPN_0_MASK | Self::VPN_1_MASK | Self::VPN_2_MASK | Self::VPN_3_MASK;
+
+    /// Lowest address. Zero.
+    const MIN_ADDRESS: u64 = 0;
+    /// Highest address. 2^48 - 1. This will change between paging systems.
+    const MAX_ADDRESS: u64 = (1 << 48) - 1;
+
+    pub const fn new(address: u64) -> Option<VirtualAddress> {
+        if address & !(Self::VPN_MASK | OFFSET_MASK) != 0 {
+            None
+        } else {
+            Some(VirtualAddress(address))
+        }
     }
-    pub fn vpn_0(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_0.bits()) >> 12
+
+    /// Offset with a page. In range `0..4096`
+    pub const fn offset_in_vpn(self) -> u64 {
+        self.0 & OFFSET_MASK
     }
-    pub fn vpn_1(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_1.bits()) >> 21
+
+    /// Address of page containing address.
+    pub const fn page_address(self) -> VirtualAddress {
+        VirtualAddress(self.0 & Self::VPN_MASK)
     }
-    pub fn vpn_2(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_2.bits()) >> 30
-    }
-    pub fn vpn_3(self) -> u64 {
-        (self.0 & VirtualAddressMask::VPN_3.bits()) >> 39
+
+    /// Virtual page number.
+    pub const fn vpn(self) -> u64 {
+        (self.0 & Self::VPN_MASK) >> 12
     }
 }
 
@@ -36,7 +67,7 @@ pub struct PhysicalAddress(pub u64);
 impl PhysicalAddress {
     /// Offset within the current physical page (frame)
     pub const fn offset_in_ppn(self) -> u64 {
-        self.0 & BITS_12
+        self.0 & OFFSET_MASK
     }
 
     /// Physical page (or frame) number.
@@ -121,10 +152,37 @@ pub fn print_current_page_table() {
 
 pub const PAGE_ENTRIES: usize = 512;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 #[repr(C, align(4096))]
 pub struct PageTable {
     entries: [Entry; PAGE_ENTRIES],
+}
+
+impl Debug for PageTable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut debug = f.debug_struct("PageTable");
+
+        // Length of "[512]" in utf-8 is 5 bytes.
+        let mut name_buffer = String::with_capacity(5);
+
+        let mut count = 0;
+        for i in 0..self.entries.len() {
+            let entry = &self.entries[i];
+            let flags = entry.flags();
+            if flags.valid() {
+                count += 1;
+                core::fmt::write(&mut name_buffer, format_args!("[{}]", i));
+                debug.field(&name_buffer, &entry);
+                name_buffer.clear();
+            }
+        }
+
+        if count < self.entries.len() {
+            debug.finish_non_exhaustive()
+        } else {
+            debug.finish()
+        }
+    }
 }
 
 pub struct PageTableRef<'a> {
@@ -133,15 +191,20 @@ pub struct PageTableRef<'a> {
     /// Level in page table. 0 is the leaf and refer to 4k pages. 3 is the highest in sv48.
     level: PageLevel,
     /// Virtual address offset.
-    offset: VirtualAddress,
+    address: u64,
 }
 
+
+
 impl<'a> PageTableRef<'a> {
+
+
     pub fn get_entry(&self, index: usize) -> EntryKind<'a> {
         let entry = self.table.entries[index];
-        if !entry.valid() {
+        let flags = entry.flags();
+        if !flags.valid() {
             EntryKind::Empty
-        } else if entry.permissions().is_none() {
+        } else if flags.permissions().is_none() {
             todo!()
         } else {
             let addr = entry.address();
@@ -155,7 +218,7 @@ pub enum EntryKind<'a> {
     Empty,
     Present(BigPage),
     ChildTable(u64),
-    _ChildTable(PageTableRef<'a>)
+    _ChildTable(PageTableRef<'a>),
 }
 
 pub fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
@@ -170,11 +233,12 @@ pub fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
                 let curr_index = index;
                 index += 1;
                 let entry = current.entries[curr_index];
-                if !entry.valid() {
+                let flags = entry.flags();
+                if !flags.valid() {
                     continue;
                 }
 
-                if entry.is_leaf() {
+                if flags.is_leaf() {
                     let addr = entry.address();
                     return Some(BigPage::new(level, addr.0));
                 }
@@ -201,32 +265,18 @@ impl ConstDefault for PageTable {
     };
 }
 
-pub const PAGE_SIZE: u64 = 0x1000;
-pub const MEGA_PAGE_SIZE: u64 = 0x200000;
-pub const GIGA_PAGE_SIZE: u64 = 0x40000000;
-pub const TERA_PAGE_SIZE: u64 = 0x2000000000000;
-pub const PETA_PAGE_SIZE: u64 = 0x400000000000000;
-
-pub fn place_dump_map(map: &mut PageTable) {
+/// Maps first 4 GiB using big pages. All are R|W|X
+pub fn place_dumb_map(map: &mut PageTable) {
     *map = PageTable::DEFAULT;
     for i in 0..4 {
-        map.entries[i] = Entry::builder()
-            .for_offset((i * 0x40000000) as u64)
+        let flags = EntryFlags::builder()
             .valid(true)
             .readable(true)
             .writable(true)
             .executable(true)
             .build();
-    }
-}
 
-bitflags! {
-    struct VirtualAddressMask : u64 {
-        const PAGE_OFFSET = BITS_12;
-        const VPN_0 = BITS_9 << 12;
-        const VPN_1 = BITS_9 << 21;
-        const VPN_2 = BITS_9 << 30;
-        const VPN_3 = BITS_9 << 39;
+        map.entries[i] = Entry::new(PhysicalAddress(i as u64 * 0x40000000), flags);
     }
 }
 
@@ -240,8 +290,56 @@ bitflags! {
     }
 }
 
+#[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+pub struct Entry(pub u64);
+
+impl ConstDefault for Entry {
+    const DEFAULT: Self = Self::empty();
+}
+
+impl Entry {
+    /// Construct the empty entry. Default state for page table entries.
+    /// All bits are zero.
+    pub const fn empty() -> Self {
+        Entry(0)
+    }
+
+    /// Contstruct entry from physical page number and flags.
+    pub const fn new(address: PhysicalAddress, flags: EntryFlags) -> Entry {
+        let bits = address.0 | flags.bits;
+        Entry(bits)
+    }
+
+    /// Get the physical page number address refers to.
+    pub fn address(&self) -> PhysicalAddress {
+        PhysicalAddress(self.0 & EntryFlags::PPN.bits)
+    }
+
+    /// Gives the flags set in the entry. ie. All bits except the address.
+    pub fn flags(&self) -> EntryFlags {
+        EntryFlags {
+            bits: self.0 & EntryFlags::FLAGS.bits,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl Debug for Entry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let address = self.address();
+        let flags = self.flags();
+        f.debug_tuple("Entry")
+            .field(&format_args!("0x{:08x}", address.0))
+            .field(&flags)
+            .finish()
+    }
+}
+
 bitflags! {
-    pub struct Entry : u64 {
+    pub struct EntryFlags : u64 {
         #[doc = "Entry is valid"]
         const V = 1 << 0;
         #[doc = "Is a leaf page and is readable"]
@@ -272,19 +370,22 @@ bitflags! {
         #[doc = "Use for NAPOT entries. Specified by Svnapot"]
         const N     = 1 << 63;
 
-        const FLAGS = Self::V.bits | Self::R.bits | Self::W.bits | Self::X.bits | Self::U.bits | Self::G.bits | Self::A.bits | Self::A.bits | Self::D.bits;
+        #[doc = "Mask to access only flags without address"]
+        const FLAGS = Self::V.bits | Self::R.bits | Self::W.bits | Self::X.bits | Self::U.bits | Self::G.bits | Self::A.bits | Self::A.bits | Self::D.bits | Self::PBMT.bits | Self::N.bits;
+
+        #[doc = "Mask to access entire PPN"]
         const PPN = Self::PPN_0.bits | Self::PPN_1.bits | Self::PPN_2.bits;
     }
 }
 
-impl Entry {
+impl EntryFlags {
     pub fn builder() -> EntryBuilder {
         EntryBuilder {
-            entry: Entry::empty(),
+            entry: EntryFlags::empty(),
         }
     }
 
-    pub fn just_flags(&self) -> Entry {
+    pub fn just_flags(&self) -> EntryFlags {
         *self & Self::FLAGS
     }
     pub fn ppn_0(self) -> u64 {
@@ -357,7 +458,7 @@ impl Entry {
     }
 }
 
-impl Default for Entry {
+impl Default for EntryFlags {
     fn default() -> Self {
         Self {
             bits: Default::default(),
@@ -365,43 +466,43 @@ impl Default for Entry {
     }
 }
 
-impl ConstDefault for Entry {
-    const DEFAULT: Self = Entry::empty();
+impl ConstDefault for EntryFlags {
+    const DEFAULT: Self = EntryFlags::empty();
 }
 
 pub struct EntryBuilder {
-    entry: Entry,
+    entry: EntryFlags,
 }
 
 impl EntryBuilder {
     pub fn for_offset(mut self, offset: u64) -> Self {
         let pa = PhysicalAddress(offset);
-        self.entry.remove(Entry::PPN_0);
-        self.entry.remove(Entry::PPN_1);
-        self.entry.remove(Entry::PPN_2);
-        self.entry &= Entry::from_bits(pa.ppn_0() << 10).unwrap();
-        self.entry &= Entry::from_bits(pa.ppn_1() << 19).unwrap();
-        self.entry &= Entry::from_bits(pa.ppn_2() << 28).unwrap();
+        self.entry.remove(EntryFlags::PPN_0);
+        self.entry.remove(EntryFlags::PPN_1);
+        self.entry.remove(EntryFlags::PPN_2);
+        self.entry &= EntryFlags::from_bits(pa.ppn_0() << 10).unwrap();
+        self.entry &= EntryFlags::from_bits(pa.ppn_1() << 19).unwrap();
+        self.entry &= EntryFlags::from_bits(pa.ppn_2() << 28).unwrap();
         self
     }
 
     pub fn valid(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::V, preset);
+        self.entry.set(EntryFlags::V, preset);
         self
     }
     pub fn readable(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::R, preset);
+        self.entry.set(EntryFlags::R, preset);
         self
     }
     pub fn writable(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::W, preset);
+        self.entry.set(EntryFlags::W, preset);
         self
     }
     pub fn executable(mut self, preset: bool) -> Self {
-        self.entry.set(Entry::X, preset);
+        self.entry.set(EntryFlags::X, preset);
         self
     }
-    pub fn build(self) -> Entry {
+    pub fn build(self) -> EntryFlags {
         self.entry
     }
 }
@@ -456,7 +557,6 @@ pub const PAGE_LEVELS: [(PageLevel, u64); 2] = [
     (BigPage::MegaPage(0).level(), BigPage::MegaPage(0).size()),
 ];
 
-
 impl BigPage {
     pub const fn new(level: PageLevel, address: u64) -> BigPage {
         match level {
@@ -484,13 +584,9 @@ impl BigPage {
 
     pub const fn position(self) -> u64 {
         match self {
-            BigPage::Page(n)
-            | BigPage::MegaPage(n)
-            | BigPage::GigaPage(n)
-            => n,
+            BigPage::Page(n) | BigPage::MegaPage(n) | BigPage::GigaPage(n) => n,
         }
     }
-
 
     pub fn page_for(position: u64, at_most: u64) -> BigPage {
         for (level, size) in PAGE_LEVELS.iter().rev() {

@@ -56,7 +56,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__stack_limit, __stack_top, __global_pointer, __image_end}, pagetable::{place_dump_map, BigPage},
+    linker_info::__image_end, pagetable::{place_dumb_map, BigPage},
 };
 
 #[repr(align(4096))]
@@ -184,8 +184,8 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
 
     {
         let mut pt = WIP_PAGETABLE.lock();
-        place_dump_map(&mut *pt);
-        println!("{:?}", *pt);
+        place_dumb_map(&mut *pt);
+        println!("{:#?}", *pt);
 
         let root_addr = (&*pt) as *const PageTable as u64;
         // Update page table
