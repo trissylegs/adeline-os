@@ -1,6 +1,5 @@
 {
     "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
-    "rust-analyzer.files.excludeDirs": [".cargo/**"],
     "cSpell.words": [
         "addi",
         "asid",

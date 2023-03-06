@@ -1,5 +1,5 @@
 use core::ops::Range;
-use alloc::{vec::Vec, collections::BTreeSet};
+use alloc::vec::Vec;
 use bitflags::bitflags;
 use crate::{STACK_GUARD, println};
 
@@ -31,6 +31,12 @@ impl Region {
     pub fn overlaps(&self, other: &Region) -> bool {
         // Checks if two regions overlap
         self.start() < other.end() && self.end() > other.start()
+    }
+
+    pub fn iter_pages(&self) -> impl Iterator<Item = (VirtualAddress, Permission)> + '_ {
+        let start = self.start().0;
+        let end = self.end().0;
+        (start..end).step_by(4096).map(|a| (VirtualAddress(a), self.perms))
     }
 }
 
@@ -125,6 +131,10 @@ impl MemoryRegions {
             println!("  {:016x} - {:016x} {:?} {}", region.address.0, region.end.0, region.perms, region.desc);
         }
     }
+
+    pub fn iter_pages(&self) -> impl Iterator<Item = (VirtualAddress, Permission)> + '_ {
+        self.regions.iter().flat_map(|r| r.iter_pages())
+    }
 }
 
 #[test_case]
@@ -156,6 +166,20 @@ bitflags! {
         const RX = Self::R.bits | Self::X.bits;
         #[doc = "Readable, writable and executable memory. WARNING: You shouldn't need this."]
         const RWX = Self::R.bits | Self::W.bits | Self::X.bits;
+    }
+}
+
+impl Permission {
+    pub fn readable(&self) -> bool {
+        self.contains(Self::R)
+    }
+
+    pub fn writable(&self) -> bool {
+        self.contains(Self::W)
+    }
+
+    pub fn executable(&self) -> bool {
+        self.contains(Self::X)
     }
 }
 

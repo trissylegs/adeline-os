@@ -32,7 +32,6 @@ mod time;
 mod trap;
 mod util;
 
-use const_default::ConstDefault;
 use hwinfo::DtbRef;
 use pagetable::{PageTable};
 use ::time::OffsetDateTime;
@@ -56,7 +55,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__image_end, LinkerInfo}, pagetable::{place_dumb_map, BigPage},
+    linker_info::{__image_end, LinkerInfo}, pagetable::{place_dumb_map, BigPage, PageTableRoot},
 };
 
 #[repr(align(4096))]
@@ -94,8 +93,6 @@ pub static STACK_GUARD: StackGuardPage = StackGuardPage {
 };
 
 static BOOTLOOP_DETECT: AtomicBool = AtomicBool::new(false);
-
-static WIP_PAGETABLE: Mutex<PageTable> = Mutex::new(PageTable::DEFAULT);
 
 #[no_mangle]
 pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
@@ -177,11 +174,9 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
     );
 
     unsafe {
-
         sie::set_ssoft();
         sie::set_stimer();
         sie::set_sext();
-
         sstatus::set_sie();
     }
 
@@ -189,31 +184,27 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
     println!("time: {}", time);
 
     let sie_val = sie::read();
-    println!("sie       = {:?}", sie_val);
-    println!(" .ssoft   = {:?}", sie_val.ssoft());
-    println!(" .stimer  = {:?}", sie_val.stimer());
-    println!(" .sext    = {:?}", sie_val.sext());
-    println!(" .usoft   = {:?}", sie_val.usoft());
-    println!(" .utimer  = {:?}", sie_val.utimer());
-    println!(" .uext    = {:?}", sie_val.uext());
+    println!("sie          = {:?}", sie_val);
+    println!("    .ssoft   = {:?}", sie_val.ssoft());
+    println!("    .stimer  = {:?}", sie_val.stimer());
+    println!("    .sext    = {:?}", sie_val.sext());
+    println!("    .usoft   = {:?}", sie_val.usoft());
+    println!("    .utimer  = {:?}", sie_val.utimer());
+    println!("    .uext    = {:?}", sie_val.uext());
 
     println!("heart: {}", hart_id);
     println!();
 
     pagetable::print_current_page_table();
 
+    let mut pt = PageTableRoot::new();
     {
-        let mut pt = WIP_PAGETABLE.lock();
-        place_dumb_map(&mut *pt);
-        println!("{:#?}", *pt);
+        pt.map_all(memory_regions);
 
-        let root_addr = (&*pt) as *const PageTable as u64;
-        // Update page table
-        let pa = pagetable::PhysicalAddress(root_addr);
-        let ppn = pa.ppn();
+        println!("{:#?}", pt);
 
         unsafe {
-            satp::set(satp::Mode::Sv48, 1, ppn as usize);
+            pt.set_satp(1);
         }
     };
 
