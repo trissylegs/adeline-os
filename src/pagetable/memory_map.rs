@@ -101,28 +101,28 @@ impl MemoryRegions {
     }
 
     pub fn add_inital_memory(&mut self, hwinfo: &'static crate::hwinfo::HwInfo, image: &'static crate::linker_info::LinkerInfo) {
-        self.add(0..65536, "NULL", Permission::NONE);
-        self.add(hwinfo.uart.reg.as_range(), &hwinfo.uart.name, Permission::RW);
+        // self.add(0..65536, "NULL", Permission::NONE);
+        self.add(hwinfo.uart.reg.as_range(), &hwinfo.uart.name, Permission::RWX);
         // CLINT is protected by PMP.
-        self.add(hwinfo.clint.reg.as_range(), &hwinfo.clint.name, Permission::NONE);
-        self.add(hwinfo.plic.reg.as_range(), &hwinfo.plic.name, Permission::RW);
-        self.add(hwinfo.rtc.reg.as_range(), &hwinfo.rtc.name, Permission::RW);
-        for reserved in hwinfo.reserved_memory.iter() {
-            self.add(reserved.as_range(), "Reserved", Permission::NONE);
-        }
-        self.add(image.text.clone(), "Kernel text", Permission::RX);
-        self.add(image.rodata.clone(), "Kernel rodata", Permission::R);
-        self.add(image.data.clone(), "Kernel data", Permission::RW);
+        // self.add(hwinfo.clint.reg.as_range(), &hwinfo.clint.name, Permission::NONE);
+        self.add(hwinfo.plic.reg.as_range(), &hwinfo.plic.name, Permission::RWX);
+        self.add(hwinfo.rtc.reg.as_range(), &hwinfo.rtc.name, Permission::RWX);
+        // for reserved in hwinfo.reserved_memory.iter() {
+            // self.add(reserved.as_range(), "Reserved", Permission::NONE);
+        // }
+        self.add(image.text.clone(), "Kernel text", Permission::RWX);
+        self.add(image.rodata.clone(), "Kernel rodata", Permission::RWX);
+        self.add(image.data.clone(), "Kernel data", Permission::RWX);
         let stack_guard = STACK_GUARD.address();
-        self.add(image.bss.start .. stack_guard.start, "Kernel bss", Permission::RW);
+        self.add(image.bss.start .. stack_guard.start, "Kernel bss", Permission::RWX);
         self.add(stack_guard.start .. stack_guard.end, "Stack guard", Permission::NONE);
-        self.add(stack_guard.end .. image.bss.end, "Kernel stack", Permission::RW);
-        self.add(image.tdata.clone(), "Kernel thread template data", Permission::R);
-        self.add(image.tbss.clone(), "Kernel thread template bss", Permission::R);
+        self.add(stack_guard.end .. image.bss.end, "Kernel stack", Permission::RWX);
+        self.add(image.tdata.clone(), "Kernel thread template data", Permission::RWX);
+        self.add(image.tbss.clone(), "Kernel thread template bss", Permission::RWX);
 
         // Add the kernel heap
         let heap_range = crate::basic_allocator::heap_range();
-        self.add(heap_range.as_range(), "Kernel heap", Permission::RW);
+        self.add(heap_range.as_range(), "Kernel heap", Permission::RWX);
     }
 
     pub fn print(&self) {
@@ -130,6 +130,11 @@ impl MemoryRegions {
         for region in self.regions.iter() {
             println!("  {:016x} - {:016x} {:?} {}", region.address.0, region.end.0, region.perms, region.desc);
         }
+    }
+
+
+    pub fn iter_regions(&self) -> impl Iterator<Item = &Region> + '_ {
+        self.regions.iter()
     }
 
     pub fn iter_pages(&self) -> impl Iterator<Item = (VirtualAddress, Permission)> + '_ {

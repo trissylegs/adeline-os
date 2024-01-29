@@ -33,7 +33,6 @@ mod trap;
 mod util;
 
 use hwinfo::DtbRef;
-use pagetable::{PageTable};
 use ::time::OffsetDateTime;
 use core::{
     cell::UnsafeCell,
@@ -43,7 +42,7 @@ use core::{
 
 use riscv::register::{
     mtvec,
-     sie, sstatus,  stvec, satp,
+     sie, sstatus,  stvec,
 };
 use spin::Mutex;
 
@@ -55,7 +54,7 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__image_end, LinkerInfo}, pagetable::{place_dumb_map, BigPage, PageTableRoot},
+    linker_info::{__image_end, LinkerInfo}, pagetable::{BigPage, PageTableRoot},
 };
 
 #[repr(align(4096))]
@@ -108,6 +107,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
     sbi::init();
     unsafe {
         // Initialize the memory allocatior using space from the end of the kernel image the start of the DTB.
+        #[allow(static_mut_ref)]
         basic_allocator::init_from_free_space(&mut __image_end as *mut u8 as *mut u8, &dtb);
     }
 
@@ -195,20 +195,33 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
     println!("heart: {}", hart_id);
     println!();
 
+    #[cfg(test)]
+    test_main();
+
+    #[cfg(test)]
+    panic!("tests finished");
+
+
     pagetable::print_current_page_table();
 
     let mut pt = PageTableRoot::new();
     {
-        pt.map_all(memory_regions);
+        // pt.map_all(memory_regions);
+        // map 1st 4GiB
+        pt.dumb_map();
 
         println!("{:#?}", pt);
 
+        pt.print();
+        // shutdown();
+
+        println!("Setting satp");
         unsafe {
-            pt.set_satp(1);
+           pt.set_satp(1);
         }
     };
 
-    pagetable::print_current_page_table();
+
 
     for mr in hwinfo.memory_layout() {
         println!("{:?}", mr);
@@ -244,8 +257,6 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
         }
     }
 
-    #[cfg(test)]
-    test_main();
 
     // shutdown();
     #[allow(unused)]
@@ -295,6 +306,7 @@ where
     }
 }
 
+#[cfg(test)]
 pub fn test_runner(tests: &[&dyn Testable]) {
     println!("Running {} tests", tests.len());
     for test in tests {

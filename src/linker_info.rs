@@ -1,3 +1,5 @@
+#![allow(static_mut_ref)]
+
 use core::fmt::Write;
 use core::{ffi::c_void, ops::Range};
 

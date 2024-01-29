@@ -11,5 +11,5 @@ linker = "riscv64-unknown-elf-gcc"
 target = "riscv64gc-unknown-none-elf"
 
 [env]
-HOST_CC="gcc-12"
+HOST_CC = "gcc-13"
 TARGET_CC = "riscv64-unknown-elf-gcc"

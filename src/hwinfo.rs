@@ -14,12 +14,11 @@ use crate::{
     basic_allocator,
     isr::plic::InterruptId,
     linker_info::{bss, data, rodata, text},
-    pagetable::{PAGE_SIZE, BigPage},
     prelude::*,
     sbi::{
         hart::HartId,
         reset::{shutdown, system_reset_extension},
-    },
+    }, pagetable::{BigPage, PAGE_SIZE},
 };
 
 static HW_INFO: Once<HwInfo> = Once::INIT;

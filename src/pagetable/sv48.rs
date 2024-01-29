@@ -1,27 +1,221 @@
-use core::{
-    alloc::Layout,
-    borrow::Borrow,
-    fmt::{Debug, Display, Formatter},
-    hash::Hash,
-    iter::from_fn,
-    mem::forget,
-    ops::Deref,
-};
+use core::{any::type_name, fmt::{Debug, Display, Formatter}, hash::Hash, marker::PhantomData, mem, mem::ManuallyDrop};
 
-use crate::{basic_consts::*, prelude::*};
+use crate::{basic_consts::*, prelude::*, util::IndentPrint};
 
 use bitflags::bitflags;
 use const_default::ConstDefault;
 use riscv::register::{
     self,
-    satp::{self, Mode},
+    satp::Mode,
 };
-use smallvec::SmallVec;
+use crate::pagetable::BigPage::GigaPage;
 
 use super::memory_map::{MemoryRegions, Permission};
 
+pub enum Level3 {}
+pub enum Level2 {}
+pub enum Level1 {}
+pub enum Level0 {}
+
+pub trait TableLevel {
+    const LEVEL: u8;
+
+    fn level_vpn(v: &VirtualAddress) -> usize;
+}
+
+impl TableLevel for Level3 {
+    const LEVEL: u8 = 3;
+    fn level_vpn(v: &VirtualAddress) -> usize {
+        v.vpn_3() as usize
+    }
+}
+impl TableLevel for Level2 {
+    const LEVEL: u8 = 2;
+
+    fn level_vpn(v: &VirtualAddress) -> usize {
+        v.vpn_2() as usize
+    }
+}
+impl TableLevel for Level1 {
+    const LEVEL: u8 = 1;
+
+    fn level_vpn(v: &VirtualAddress) -> usize {
+        v.vpn_1() as usize
+    }
+}
+impl TableLevel for Level0 {
+    const LEVEL: u8 = 0;
+
+    fn level_vpn(v: &VirtualAddress) -> usize {
+        v.vpn_0() as usize
+    }
+}
+
+trait MapAddr: TableLevel + Sized {
+    fn map_addr(
+        table: &mut PageTable<Self>,
+        addr: PhysicalAddress,
+        to: VirtualAddress,
+        perm: Permission,
+    );
+
+    fn print(table: &PageTable<Self>, virt: u64);
+}
+
+impl MapAddr for Level0 {
+    fn map_addr(
+        table: &mut PageTable<Level0>,
+        addr: PhysicalAddress,
+        to: VirtualAddress,
+        perm: Permission,
+    ) {
+        let entry_index = Level0::level_vpn(&to);
+        let flags = EntryFlags::builder()
+            .valid(true)
+            .with_permissions(perm)
+            .build();
+        let entry = Entry::new(addr, flags);
+        // println!("Adding mapping {:?} for {:08x}", entry, to.0);
+        table.entries[entry_index] = entry;
+    }
+
+    fn print(table: &PageTable<Self>, virt: u64) {
+        return;
+        // This is written independent so we can see where I fucked everything up.
+        let mut writer = IndentPrint::new(2 * 3);
+        let level = Level0::LEVEL;
+        for (i, e) in table.entries.iter().enumerate() {
+            let vpn = virt | ((i as u64) << (level * 9 + 12));
+
+            let bits = e.bits();
+            if bits != 0 {
+                let v = bits & 1;
+                let r = (bits >> 1) & 1;
+                let w = (bits >> 2) & 1;
+                let x = (bits >> 3) & 1;
+                let u = (bits >> 4) & 1;
+                let g = (bits >> 5) & 1;
+                let a = (bits >> 6) & 1;
+                let d = (bits >> 7) & 1;
+                let rsw = (bits >> 8) & BITS_2;
+                let ppn = bits & (BITS_44 << 10);
+                let reserved = (bits >> 54) & BITS_7;
+                let pbmt = (bits >> 61) & BITS_2;
+                let n = (bits >> 63) & 1;
+
+                writeln!(writer, "vpn=0x{vpn:08x} ppn=0x{ppn:08x} v={v} r={r} w={w} x={x} u={u} g={g} a={a} d={d} rsw={rsw} ppn=0x{ppn:08x} reserved=0x{reserved:x} pbmt={pbmt} n={n}")
+                    .expect("writeln");
+            }
+        }
+    }
+}
+
+impl<H: HierarchicalLevel> MapAddr for H
+where
+    H::Next: MapAddr,
+{
+    fn map_addr(
+        table: &mut PageTable<H>,
+        addr: PhysicalAddress,
+        to: VirtualAddress,
+        perm: Permission,
+    ) {
+        //println!("map_addr: self={:?}, addr={:?}, to={:?}, perm={:?}",self, addr, to, perm);
+        let mut entry = table.entry_for_mut(to);
+
+        match entry.child() {
+            Some(child) => H::Next::map_addr(child, addr, to, perm),
+            None => {
+                let child = entry.insert_child_table(PageTable::allocate());
+                H::Next::map_addr(child, addr, to, perm)
+            }
+        }
+    }
+
+    fn print(table: &PageTable<Self>, virt: u64) {
+        // This written to be independent of the other page code so I can tell if screwed it up.
+        let mut writer = IndentPrint::new(2 * (3 - H::LEVEL));
+        let level = H::LEVEL as u64;
+
+        let addr = (table as *const PageTable<Self>) as usize;
+        for (i, e) in table.entries.iter().enumerate() {
+            let vpn = virt | ((i as u64) << (level * 9));
+
+            let bits = e.bits();
+            if bits != 0 {
+                let info = PageEntryInfo {
+                    v: bits & 1,
+                    r: (bits >> 1) & 1,
+                    w: (bits >> 2) & 1,
+                    x: (bits >> 3) & 1,
+                    u: (bits >> 4) & 1,
+                    g: (bits >> 5) & 1,
+                    a: (bits >> 6) & 1,
+                    d: (bits >> 7) & 1,
+                    rsw: (bits >> 8) & 0b11,
+                    ppn_0: (bits >> 10) & 0b111111111,
+                    ppn_1: (bits >> 19) & 0b111111111,
+                    ppn_2: (bits >> 28) & 0b111111111,
+                    ppn_3: (bits >> 37) & 0b11111111111111111,
+                    reserved: (bits >> 54) & 0b1111111,
+                    pbmt: (bits >> 61) & 0b11,
+                    n: (bits >> 63) & 1,
+                };
+
+                writeln!(writer, "0x{addr:08x} {info:?}").expect("writeln");
+
+                // writeln!(writer, "addr=0x{addr:08x} vpn=0x{vpn:08x} ppn=0x{ppn:08x} v={v} r={r} w={w} x={x} u={u} g={g} a={a} d={d} rsw={rsw} ppn=0x{ppn:08x} reserved=0x{reserved:x} pbmt={pbmt} n={n}")
+                //    .expect("writeln");
+
+                if info.v != 0 && info.r == 0 && info.w == 0 && info.x == 0 {
+                    let addr = e.address().0 as usize as *const PageTable<H::Next>;
+                    let ptr = unsafe { &*addr };
+                    H::Next::print(ptr, vpn);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PageEntryInfo {
+    v: u64,
+    r: u64,
+    w: u64,
+    x: u64,
+    u: u64,
+    g: u64,
+    a: u64,
+    d: u64,
+    rsw: u64,
+    ppn_0: u64,
+    ppn_1: u64,
+    ppn_2: u64,
+    ppn_3: u64,
+    reserved: u64,
+    pbmt: u64,
+    n: u64,
+}
+
+pub trait HierarchicalLevel: TableLevel {
+    type Next: TableLevel;
+}
+
+impl HierarchicalLevel for Level3 {
+    type Next = Level2;
+}
+impl HierarchicalLevel for Level2 {
+    type Next = Level1;
+}
+impl HierarchicalLevel for Level1 {
+    type Next = Level0;
+}
+
+// 4,096 B4; 4 K
 pub const PAGE_SIZE: u64 = 0x1000;
+// 2,097,152 B; 2048 K, 2 M
 pub const MEGA_PAGE_SIZE: u64 = 0x200000;
+// 1,073,741,824 B; 1,048,576 K; 1024 M; 1 G
 pub const GIGA_PAGE_SIZE: u64 = 0x40000000;
 pub const TERA_PAGE_SIZE: u64 = 0x2000000000000;
 pub const PETA_PAGE_SIZE: u64 = 0x400000000000000;
@@ -192,19 +386,16 @@ pub const PAGE_ENTRIES: usize = 512;
 
 #[derive(Debug)]
 pub struct PageTableRoot {
-    root: Box<PageTable>,
+    root: Box<PageTable<Level3>>,
 }
 
 impl PageTableRoot {
-    pub fn get_mut(&mut self) -> PageTableMut<'_> {
-        PageTableMut {
-            table: &mut self.root,
-            level: PageLevel::Level3,
-        }
+    pub fn get_mut(&mut self) -> &mut PageTable<Level3> {
+        &mut self.root
     }
 
     pub fn map_addr(&mut self, addr: PhysicalAddress, to: VirtualAddress, perm: Permission) {
-        self.get_mut().map_addr(addr, to, perm)
+        Level3::map_addr(&mut self.root, addr, to, perm)
     }
 
     pub(crate) fn new() -> Self {
@@ -214,38 +405,65 @@ impl PageTableRoot {
     }
 
     pub(crate) fn map_all(&mut self, memory_regions: MemoryRegions) {
-        for (addr, perm) in memory_regions.iter_pages() {
-            self.map_addr(PhysicalAddress(addr.0), addr, perm);
+        for region in memory_regions.iter_regions() {
+            println!("Region: {:?}", region);
+            for (addr, perm) in region.iter_pages() {
+                self.map_addr(PhysicalAddress(addr.0), addr, perm);
+            }
+        }
+    }
+
+    pub fn dumb_map(&mut self) {
+        println!("Mapping 4 giga pages.");
+        let root = &mut *self.root;
+        let flags = EntryFlags::V | EntryFlags::R | EntryFlags::W  | EntryFlags::X;
+
+        let mut page = PageTable::<Level2>::allocate();
+
+        for i in 0..512 {
+            // let page = Box::new(PageTable::<Level2>)
+            page.entries[i] = Entry::new(PhysicalAddress((i as u64) * GIGA_PAGE_SIZE), flags);
+        }
+
+        root.entries[0] = Entry::new(PhysicalAddress(page.address()), EntryFlags::V);
+        mem::forget(page);
+    }
+
+    pub unsafe fn set_satp(&mut self, asid: u16) {
+        let root_addr = (&*self.root) as *const PageTable<Level3> as u64;
+        // Update page table
+        let pa = PhysicalAddress(root_addr);
+        let ppn = pa.ppn();
+        const SV48: u64 = 9;
+        let sapt_value = ppn | (asid as u64) << 44 | SV48 << 60;
+        // set sapt register
+        unsafe {
+            core::arch::asm!("csrrw x0, satp, {0}", in(reg) sapt_value);
         }
     }
 
     pub fn print(&self) {
-        println!("Root page:");
-        self.root.print();
-    }
-
-    pub unsafe fn set_satp(&mut self, asid: u32) {
-        let root_addr = (&*self.root) as *const PageTable as u64;
-        // Update page table
-        let pa = PhysicalAddress(root_addr);
-        let ppn = pa.ppn();
-        satp::set(satp::Mode::Sv48, asid as usize, ppn as usize);
+        println!("Page table root 0x{:08x}", self.root.address());
+        Level3::print(&self.root, 0);
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash)]
 #[repr(C, align(4096))]
-pub struct PageTable {
+pub struct PageTable<L: TableLevel> {
     entries: [Entry; PAGE_ENTRIES],
+    _p: PhantomData<L>,
 }
 
-impl PageTable {
-    /// Allocate a new page table. All entries are zero. This ensures it's alligned correctly and isn't moved accidentally.
+impl<L: TableLevel> PageTable<L> {
+
+    /// Allocate a new page table. All entries are zero. This ensures it's aligned correctly and isn't moved accidentally.
     pub fn allocate() -> Box<Self> {
         let new = Box::new(PageTable {
             entries: [Entry::DEFAULT; PAGE_ENTRIES],
+            _p: PhantomData,
         });
-        println!("INFO: allocated {:08x}", new.address());
+        // println!("INFO: allocated {:08x}", new.address());
         new
     }
 
@@ -253,15 +471,13 @@ impl PageTable {
         self.entries.iter().all(|e| !e.flags().valid())
     }
 
-    /// Free a page table. This will only succeed if the page table is all zero.
-    pub fn try_free(mut self: Box<Self>) -> Result<(), Box<Self>> {
+    /// Free a page table. This will only succeed if the page table is all zero. Otherwise it will return the page back to you.
+    pub fn try_free(self: Box<Self>) -> Result<(), Box<Self>> {
         if self.is_empty() {
             unsafe {
-                let layout = Layout::new::<Self>();
-                unsafe {
-                    alloc::alloc::dealloc(&mut *self as *mut Self as *mut u8, layout);
-                }
-                forget(self);
+                let raw = Box::into_raw(self);
+                let manual_drop = raw as *mut ManuallyDrop<PageTable<L>>;
+                let _ = Box::from_raw(manual_drop);
                 Ok(())
             }
         } else {
@@ -275,21 +491,39 @@ impl PageTable {
         addr as usize as u64
     }
 
-    pub fn print(&self) {
-        for
+    pub fn entry<'a>(&'a self, index: impl Into<usize>) -> PageTableRefEntry<'a, L> {
+        let index = index.into();
+        assert!(index < PAGE_ENTRIES);
+        PageTableRefEntry {
+            table: self,
+            index: index,
+        }
+    }
+
+    pub fn entry_mut<'a>(&'a mut self, index: impl Into<usize>) -> PageTableMutEntry<'a, L> {
+        let index = index.into();
+        assert!(index < PAGE_ENTRIES);
+        PageTableMutEntry {
+            table: self,
+            index: index,
+        }
+    }
+
+    fn entry_for_mut(&mut self, to: VirtualAddress) -> PageTableMutEntry<L> {
+        self.entry_mut(L::level_vpn(&to))
     }
 }
 
-impl Drop for PageTable {
+impl<L: TableLevel> Drop for PageTable<L> {
     fn drop(&mut self) {
         // Because page table can have children which may have complex Drop logic, we don't free them for now.
         panic!("ERROR: leaked PageTable {:08x}", self.address());
     }
 }
 
-impl Debug for PageTable {
+impl<L: TableLevel> Debug for PageTable<L> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        let mut debug = f.debug_struct("PageTable");
+        let mut debug = f.debug_struct(type_name::<Self>());
 
         // Length of "[512]" in utf-8 is 5 bytes.
         let mut name_buffer = String::with_capacity(5);
@@ -300,7 +534,7 @@ impl Debug for PageTable {
             let flags = entry.flags();
             if flags.valid() {
                 count += 1;
-                core::fmt::write(&mut name_buffer, format_args!("[{}]", i));
+                core::fmt::write(&mut name_buffer, format_args!("[{}]", i))?;
                 debug.field(&name_buffer, &entry);
                 name_buffer.clear();
             }
@@ -314,44 +548,13 @@ impl Debug for PageTable {
     }
 }
 
-
 #[derive(Debug)]
-pub struct PageTableRef<'a> {
-    table: &'a PageTable,
-    level: PageLevel,
-}
-
-#[derive(Debug)]
-pub struct PageTableRefEntry<'a> {
-    table: &'a PageTable,
-    level: PageLevel,
+pub struct PageTableRefEntry<'a, L: TableLevel> {
+    table: &'a PageTable<L>,
     index: usize,
 }
 
-impl<'a> PageTableRef<'a> {
-    pub fn new(table: &'a PageTable, level: PageLevel) -> Self {
-        Self { table, level }
-    }
-
-    pub fn level(&self) -> PageLevel {
-        self.level
-    }
-
-    pub fn entry(&self, index: impl Into<usize>) -> PageTableRefEntry {
-        assert!(index.into() < PAGE_ENTRIES);
-        PageTableRefEntry {
-            table: self.table,
-            level: self.level,
-            index: index.into()
-        }
-    }
-
-    pub fn child_table(&self, index: usize) -> Option<PageTableRef<'a>> {
-        todo!()
-    }
-}
-
-impl<'a> PageTableRefEntry<'a> {
+impl<'a, L: TableLevel> PageTableRefEntry<'a, L> {
     pub fn flags(&self) -> EntryFlags {
         self.table.entries[self.index].flags()
     }
@@ -359,110 +562,63 @@ impl<'a> PageTableRefEntry<'a> {
     pub fn valid(&self) -> bool {
         self.table.entries[self.index].flags().valid()
     }
-
-    pub fn child(&self) -> Option<PageTableRef<'a>> {
-        match (self.valid(), self.level.down()) {
-            (true, Some(level)) => {
-                let address = self.table.entries[self.index].address();
-                let table = unsafe { &*(address.0 as *const PageTable) };
-                Some(PageTableRef { table, level })
-            }
-            _ => None
-        }
-    }
 }
 
-#[derive(Debug)]
-pub struct PageTableMut<'a> {
-    /// Reference to page table.
-    table: &'a mut PageTable,
-    /// Level in page table. 0 is the leaf and refer to 4k pages. 3 is the highest in sv48.
-    level: PageLevel,
-}
-
-#[derive(Debug)]
-pub struct PageTableMutEntry<'a> {
-    table: &'a mut PageTable,
-    level: PageLevel,
-    index: usize,
-}
-
-impl<'a> PageTableMut<'a> {
-    pub fn new(table: &'a mut PageTable, level: PageLevel) -> Self {
-        Self { table, level }
-    }
-
-    pub fn level(&self) -> PageLevel {
-        self.level
-    }
-
-    pub fn entry_mut(&mut self, index: impl Into<usize>) -> PageTableMutEntry {
-        PageTableMutEntry {
-            table: self.table,
-            index: index.into(),
-            level: self.level,
-        }
-    }
-
-    pub fn child_table(&mut self, index: usize) -> Option<PageTableMut<'a>> {
-        let entry = self.table.entries[index];
-        match (self.level.down(), entry.flags().valid()) {
-            (Some(level), true) => {
-                let addr = entry.address();
-                let table = unsafe { &mut *(addr.0 as *mut PageTable) };
-                Some(PageTableMut::new(table, level))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn map_addr(&mut self, addr: PhysicalAddress, to: VirtualAddress, perm: Permission) {
-        //println!("map_addr: self={:?}, addr={:?}, to={:?}, perm={:?}",self, addr, to, perm);
-        if self.level().bottom() {
-            let mut entry = self.entry_mut(to.vpn_for_level(self.level()));
-            if entry.valid() {
-                panic!("ERROR: page already mapped");
-            }
-            entry.set(addr, perm);
+impl<'a, L: HierarchicalLevel> PageTableRefEntry<'a, L> {
+    pub fn child(&self) -> Option<&'a PageTable<L::Next>> {
+        if self.valid() {
+            let address = self.table.entries[self.index].address();
+            let table = unsafe { &*(address.0 as *const PageTable<_>) };
+            Some(table)
         } else {
-            let mut entry = self.entry_mut(to.vpn_for_level(self.level()));
-            if !entry.valid() {
-                let flags = EntryFlags::builder().with_perms(perm).valid(true).build();
-                entry.insert(PageTable::allocate(), flags);
-            }
-
-            match entry.child() {
-            Some(mut child) => child.map_addr(addr, to, perm),
-            None => panic!("Expected child after inserting child page. entry={:?}, addr={:?}, to={:?}, perm={:?}", entry, addr, to, perm),
-        }
+            None
         }
     }
 }
 
-impl<'a> PageTableMutEntry<'a> {
+#[derive(Debug)]
+pub struct PageTableMutEntry<'a, L: TableLevel> {
+    table: &'a mut PageTable<L>,
+    index: usize,
+}
+
+impl<'a, L: HierarchicalLevel> PageTableMutEntry<'a, L> {
+    pub fn child(&mut self) -> Option<&mut PageTable<L::Next>> {
+        let entry = self.table.entries[self.index];
+        if entry.flags().valid() {
+            let addr = entry.address();
+            let table = unsafe { &mut *(addr.0 as *mut PageTable<_>) };
+            Some(table)
+        } else {
+            None
+        }
+    }
+
+    pub fn insert_child_table(
+        &'a mut self,
+        page: Box<PageTable<L::Next>>,
+    ) -> &'a mut PageTable<L::Next> {
+        let pointer = Box::into_raw(page);
+        let addr = PhysicalAddress(pointer as usize as u64);
+        let flags = EntryFlags::builder()
+            .valid(true)
+            .readable(false)
+            .writable(false)
+            .executable(false)
+            .build();
+
+        self.table.entries[self.index] = Entry::new(addr, flags);
+        unsafe { &mut *pointer }
+    }
+}
+
+impl<'a, L: TableLevel> PageTableMutEntry<'a, L> {
     pub fn flags(&self) -> EntryFlags {
         self.table.entries[self.index].flags()
     }
 
     pub fn valid(&self) -> bool {
         self.table.entries[self.index].flags().valid()
-    }
-
-    pub fn insert(&mut self, page: Box<PageTable>, flags: EntryFlags) {
-        let addr = PhysicalAddress(page.address());
-        self.table.entries[self.index] = Entry::new(addr, flags);
-        forget(page);
-    }
-
-    pub fn child(&mut self) -> Option<PageTableMut<'a>> {
-        match (self.valid(), self.level.down()) {
-            (true, Some(level)) => {
-                let address = self.table.entries[self.index].address();
-                let table = unsafe { &mut *(address.0 as *mut PageTable) };
-                Some(PageTableMut { table, level })
-            }
-            _ => None,
-        }
     }
 
     fn set(&mut self, addr: PhysicalAddress, perm: Permission) {
@@ -478,52 +634,12 @@ impl<'a> PageTableMutEntry<'a> {
     }
 }
 
-pub fn iter_pages<'a>(pt: &'a PageTable) -> impl Iterator<Item = BigPage> + 'a {
-    let mut todo: SmallVec<[&PageTable; 3]> = SmallVec::new();
-    let mut level = PageLevel::Level2;
-    let mut index = 0;
-    todo.push(pt);
-    from_fn(move || {
-        while !todo.is_empty() {
-            let current = *todo.last().unwrap();
-            while index < 512 {
-                let curr_index = index;
-                index += 1;
-                let entry = current.entries[curr_index];
-                let flags = entry.flags();
-                if !flags.valid() {
-                    continue;
-                }
-
-                if flags.is_leaf() {
-                    let addr = entry.address();
-                    return Some(BigPage::new(level, addr.0));
-                }
-
-                let addr = entry.address();
-                // UNSAFELY Assuming Identity map.
-                let ptr = addr.0 as *const PageTable;
-                unsafe {
-                    let next = &*ptr;
-                    level = level.down().unwrap();
-                    todo.push(next);
-                }
-            }
-            todo.pop();
-            level = level.up().unwrap();
-        }
-        return None;
-    })
-}
-
-pub fn map(table: &mut PageTableRoot, map: &MemoryRegions) {
-    println!("Mapping memory");
-    for (addr, perm) in map.iter_pages() {}
-}
-
 /// Maps first 4 GiB using big pages. All are R|W|X
-pub fn place_dumb_map(map: &mut PageTable) {
-    map.entries = [Entry::empty(); 512];
+///
+/// # Warning
+/// If root already has mapping's they will just be leaked here.
+pub fn place_dumb_map(map: &mut PageTableRoot) {
+    map.root.entries = [Entry::empty(); 512];
     for i in 0..4 {
         let flags = EntryFlags::builder()
             .valid(true)
@@ -532,7 +648,7 @@ pub fn place_dumb_map(map: &mut PageTable) {
             .executable(true)
             .build();
 
-        map.entries[i] = Entry::new(PhysicalAddress(i as u64 * 0x40000000), flags);
+        map.root.entries[i] = Entry::new(PhysicalAddress(i as u64 * 0x40000000), flags);
     }
 }
 
@@ -581,6 +697,10 @@ impl Entry {
     /// Returns true if the entry is all zeros.
     pub fn is_empty(&self) -> bool {
         self.0 == 0
+    }
+
+    fn bits(&self) -> u64 {
+        self.0
     }
 }
 
@@ -636,8 +756,8 @@ bitflags! {
 }
 
 impl EntryFlags {
-    pub fn builder() -> EntryBuilder {
-        EntryBuilder {
+    pub fn builder() -> EntryFlagsBuilder {
+        EntryFlagsBuilder {
             entry: EntryFlags::empty(),
         }
     }
@@ -727,11 +847,12 @@ impl ConstDefault for EntryFlags {
     const DEFAULT: Self = EntryFlags::empty();
 }
 
-pub struct EntryBuilder {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EntryFlagsBuilder {
     entry: EntryFlags,
 }
 
-impl EntryBuilder {
+impl EntryFlagsBuilder {
     pub fn for_offset(mut self, offset: u64) -> Self {
         let pa = PhysicalAddress(offset);
         self.entry.remove(EntryFlags::PPN_0);
@@ -760,7 +881,7 @@ impl EntryBuilder {
         self
     }
 
-    fn with_perms(mut self, perm: Permission) -> Self {
+    fn with_permissions(self, perm: Permission) -> Self {
         self.readable(perm.readable())
             .writable(perm.writable())
             .executable(perm.executable())
