@@ -54,8 +54,9 @@ use crate::{
         reset::shutdown,
     },
     time::{sleep, Instant},
-    linker_info::{__image_end, LinkerInfo}, pagetable::{BigPage, PageTableRoot},
+    linker_info::{__image_end},
 };
+use crate::pagetable::Entry;
 
 #[repr(align(4096))]
 pub struct StackGuardPage {
@@ -111,7 +112,7 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
         basic_allocator::init_from_free_space(&mut __image_end as *mut u8 as *mut u8, &dtb);
     }
 
-    let mut memory_regions = pagetable::memory_map::MemoryRegions::new();
+    // let mut memory_regions = pagetable::memory_map::MemoryRegions::new();
 
     let hwinfo = hwinfo::setup_dtb(dtb);
     unsafe {
@@ -132,9 +133,6 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
 
     // Initialize UART
     console::init(hwinfo);
-
-    memory_regions.add_inital_memory(hwinfo, LinkerInfo::get());
-    memory_regions.print();
 
     // Initialize the internal timer
     time::init_time(hwinfo);
@@ -195,57 +193,11 @@ pub extern "C" fn kmain(hart_id: HartId, dtb: DtbRef) -> ! {
     println!("heart: {}", hart_id);
     println!();
 
+    for i in 0..64 {
+        println!("{:?}", Entry(1 << i));
+    }
     #[cfg(test)]
     test_main();
-
-    #[cfg(test)]
-    panic!("tests finished");
-
-
-    pagetable::print_current_page_table();
-
-    let mut pt = PageTableRoot::new();
-    {
-        // pt.map_all(memory_regions);
-        // map 1st 4GiB
-        pt.dumb_map();
-
-        println!("{:#?}", pt);
-
-        pt.print();
-        // shutdown();
-
-        println!("Setting satp");
-        unsafe {
-           pt.set_satp(1);
-        }
-    };
-
-
-
-    for mr in hwinfo.memory_layout() {
-        println!("{:?}", mr);
-
-        let mut level_start = BigPage::Page(0);
-        let mut prev_level = pagetable::PageLevel::Level0;
-        let mut level_count = 0;
-
-        for p in mr.big_pages() {
-            let level = p.level();
-            if prev_level != level {
-                if level_count > 0 {
-                    println!("  {} ({} times)", level_start, level_count);
-                    level_count = 0;
-                }
-                level_start = p;
-                prev_level = level;
-            }
-            level_count += 1;
-        }
-        if level_count > 0 {
-            println!("  {} ({} times)", level_start, level_count);
-        }
-    }
 
     let hsm = hsm_extension();
 

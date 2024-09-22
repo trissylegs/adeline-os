@@ -12,7 +12,7 @@ pub fn panic(info: &PanicInfo) -> ! {
     abort();
 }
 
-#[cfg(not(features = "ndebug"))]
+#[cfg(not(any(features = "ndebug", test)))]
 #[no_mangle]
 extern "C" fn abort() -> ! {
     loop {
@@ -20,7 +20,7 @@ extern "C" fn abort() -> ! {
     }
 }
 
-#[cfg(features = "ndebug")]
+#[cfg(any(features = "ndebug", test))]
 #[no_mangle]
 extern "C" fn abort() -> ! {
     use crate::sbi::reset::{ResetReason, ResetType, SYSTEM_RESET_EXTENSION};

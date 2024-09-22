@@ -18,8 +18,9 @@ use crate::{
     sbi::{
         hart::HartId,
         reset::{shutdown, system_reset_extension},
-    }, pagetable::{BigPage, PAGE_SIZE},
+    },
 };
+use crate::pagetable::PAGE_SIZE;
 
 static HW_INFO: Once<HwInfo> = Once::INIT;
 
@@ -54,23 +55,6 @@ impl PhysicalAddressRange {
             } else {
                 None
             }
-        })
-    }
-
-    pub fn big_pages(&self) -> impl Iterator<Item = BigPage> {
-        let mut current = self.start;
-        let end = page_end(self.end);
-        core::iter::from_fn(move || {
-            let next = current;
-            if next >= end {
-                return None;
-            }
-
-            let remaining = end - next;
-
-            let page = BigPage::page_for(next, remaining);
-            current += page.size();
-            return Some(page);
         })
     }
 
